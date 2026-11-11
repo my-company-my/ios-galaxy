@@ -147,14 +147,15 @@ def build(kernel_path, adt_path, cmdline, ramdisk_path=None):
     segs = [s for s in m['segs'] if s['vmsize']]
     text = m['segs'][0]
     assert text['name'] == '__TEXT' and text['fileoff'] == 0
-    # virt_base: 32MB (16K-granule L2 block) below the mach header, so start.s's
-    # block mapping that starts at the header's block begins exactly at phys_base.
+    # virt_base: 32 MB below the mach header (0xfffffff006000000 for the J7
+    # kernel; a multiple of the 2 MB 4K-granule L2 block), so start.s's block
+    # mapping from the header's block lands at phys_base + (header - virt_base).
     virt_base = text['vmaddr'] & ~(0x2000000 - 1)
     kernel_end = max(s['vmaddr'] + s['vmsize'] for s in segs)
     kernel_end = (kernel_end + PAGE - 1) & ~(PAGE - 1)
 
     adt_blob = open(adt_path, 'rb').read()
-    # The ADT decides where the kernel's RAM is (mkadt.py --highmem).
+    # The ADT decides where the kernel's RAM is (mkadt.py: the upper DDR bank).
     PHYS_BASE, MEM_SIZE = adt_dram(adt_blob)
     pieces = [(s['vmaddr'], s['vmsize'], buf[s['fileoff']:s['fileoff'] + s['filesize']]) for s in segs]
     ramdisk = None
