@@ -397,7 +397,7 @@
  
 --- a/osfmk/arm64/copyio.c
 +++ b/osfmk/arm64/copyio.c
-@@ -375,3 +375,46 @@
+@@ -375,3 +375,51 @@
  	return rc;
  }
  #endif
@@ -408,6 +408,11 @@
 +    unsigned size_log2, uint64_t *old);
 +extern int _sweet_casp_user(user_addr_t addr, uint64_t exp_lo, uint64_t exp_hi,
 +    uint64_t new_lo, uint64_t new_hi, unsigned is64, uint64_t old[2]);
++
++int sweet_cas_user(user_addr_t addr, uint64_t expected, uint64_t desired,
++    unsigned size_log2, uint64_t *old);
++int sweet_casp_user(user_addr_t addr, uint64_t exp_lo, uint64_t exp_hi,
++    uint64_t new_lo, uint64_t new_hi, bool is64, uint64_t old[2]);
 +
 +/*
 + * Galaxy J7 Neo: atomic compare-and-swap on user memory for the ARMv8.1

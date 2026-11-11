@@ -12,6 +12,14 @@
   boot_args (tools/qemu-j7.py); the ARMv8.1 atomics emulation passes its
   host unit test (tools/test/lse_test.py); tools/check-armv80.py matches
   LLVM's disassembly.
+- Partly verified: every changed kernel file was syntax-checked here with
+  clang -fsyntax-only and xnu's warning flags (-Weverything minus xnu's
+  exclusions) against the patched source tree, and its diagnostics were
+  compared with the original tree: no new ones, except the same
+  -Wcast-align/-Wshadow the original UFS driver already had. This found
+  and fixed the 4K commpage/VA limit (MACH_VM_MAX_ADDRESS must be the iOS
+  0xFC0000000) and missing prototypes. The new LL/SC assembly assembles
+  for ARMv8.0. Generated headers were stubbed, so this is not a full build.
 - NOT verified: the kernel has not been compiled (GitHub Actions run
   43110727956: the macOS job was cancelled before a runner started; the
   account must allow macOS runners, or use tools/build-xnu-mac.sh). Nothing

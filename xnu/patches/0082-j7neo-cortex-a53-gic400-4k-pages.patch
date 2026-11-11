@@ -25,6 +25,23 @@
  
  CFLAGS_ARM64	= -Darm64 -DARM64 -D__ARM64__ -DLP64 -DPAGE_SIZE_FIXED -DVM_KERNEL_LINK_ADDRESS=$(ARM64_LINK_ADDR) \
  			$(LARGE_MEMORY_DEFINE) -momit-leaf-frame-pointer -fno-strict-aliasing -D__API__=v4 -mkernel
+--- a/osfmk/mach/arm/vm_param.h
++++ b/osfmk/mach/arm/vm_param.h
+@@ -133,7 +133,13 @@
+ 
+ /* system-wide values */
+ #define MACH_VM_MIN_ADDRESS_RAW 0x0ULL
+-#if defined(XNU_PLATFORM_MacOSX) || defined(XNU_PLATFORM_DriverKit)
++/*
++ * ARM64_BOARD_CONFIG_SWEET (Galaxy J7 Neo, 4K pages): the iOS limit. The
++ * commpage is nested with an L1 entry at 0xFC0000000 that user mappings
++ * must stay below (pmap.c static_assert for ARM_PGSHIFT 12), and the iOS
++ * userland expects the iOS address space anyway.
++ */
++#if (defined(XNU_PLATFORM_MacOSX) || defined(XNU_PLATFORM_DriverKit)) && !defined(ARM64_BOARD_CONFIG_SWEET)
+ #define MACH_VM_MAX_ADDRESS_RAW 0x00007FFFFE000000ULL
+ #else
+ #define MACH_VM_MAX_ADDRESS_RAW 0x0000000FC0000000ULL
 --- a/pexpert/pexpert/arm64/SWEET.h
 +++ b/pexpert/pexpert/arm64/SWEET.h
 @@ -1,12 +1,21 @@
@@ -715,31 +732,16 @@
  #else
 --- a/osfmk/arm/pmap/pmap.c
 +++ b/osfmk/arm/pmap/pmap.c
-@@ -480,7 +480,7 @@
+@@ -480,7 +480,8 @@
  _Static_assert((ARM64_MAX_OFFSET_DEVICE_SMALL > ARM64_MIN_MAX_ADDRESS) && (ARM64_MAX_OFFSET_DEVICE_SMALL <= MACH_VM_MAX_ADDRESS),
      "Small device address space size outside allowable range");
  
 -#  ifdef XNU_TARGET_OS_OSX
++/* SWEET (J7 Neo): iOS-style per-device limits (MACH_VM_MAX_ADDRESS is the iOS one too). */
 +#  if defined(XNU_TARGET_OS_OSX) && !defined(SWEET)
  SECURITY_READ_ONLY_LATE(vm_map_offset_t) arm64_pmap_max_offset_default = MACH_VM_MAX_ADDRESS;
  #  else
  SECURITY_READ_ONLY_LATE(vm_map_offset_t) arm64_pmap_max_offset_default = 0x0;
-@@ -11337,6 +11337,15 @@
- 		panic("pmap_max_64bit_offset illegal option 0x%x", option);
- 	}
- 
-+#if defined(SWEET)
-+	/*
-+	 * 4K pages, T0SZ 25: user page tables reach 512 GB, far below the
-+	 * macOS MACH_VM_MAX_ADDRESS. Never hand out more than they map.
-+	 */
-+	if (max_offset_ret > (1ULL << (64 - T0SZ_BOOT))) {
-+		max_offset_ret = 1ULL << (64 - T0SZ_BOOT);
-+	}
-+#endif
- 	assert(max_offset_ret <= MACH_VM_MAX_ADDRESS);
- 	assert(max_offset_ret >= min_max_offset);
- #else
 --- a/iokit/KernelConfigTables.cpp
 +++ b/iokit/KernelConfigTables.cpp
 @@ -38,13 +38,13 @@
