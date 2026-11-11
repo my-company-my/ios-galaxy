@@ -1,10 +1,15 @@
 #pragma once
 #include <stdint.h>
 
-#define FB_BASE		0x9c000000UL	/* reserved-memory cont_splash_region */
-#define FB_W		1080
-#define FB_H		2400
-#define FB_STRIDE	(FB_W * 4)	/* a8r8g8b8, matches mainline simplefb */
+/*
+ * Galaxy J7 Neo: framebuffer S-BOOT leaves scanning out (simple-framebuffer
+ * of the exynos7870-j7velte DTS): 720x1280 a8r8g8b8 at 0x67000000.
+ */
+#define FB_BASE		0x67000000UL
+#define FB_W		720
+#define FB_H		1280
+#define FB_STRIDE	(FB_W * 4)
+#define FB_SIZE		(FB_STRIDE * FB_H)
 
 #define RED	0xffff0000U
 #define BLUE	0xff0000a0U

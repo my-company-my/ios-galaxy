@@ -8,13 +8,18 @@ int main(void)
 {
 	con_fb = host_fb;
 	con_clear(RED);
-	con_str("SHIM", "sweet milestone 2");
-	con_hex("MMFR0", 0x0000000000101122ULL);
-	con_hex2("PSCI", "ver=", 0x10001, "smccc=", 0x10002);
-	con_hex2("CPU7", "ret=", 0, "mpidr=", 0x81000700);
+	con_str("SHIM", "j7neo: xnu loader");
+	con_skip();
+	con_hex2("CPU", "el=", 1, "mpidr=", 0x80000000);
+	con_hex2("MIDR", "", 0x410fd034, "frq=", 0);
+	con_hex("MMFR0", 0x0000000000001122ULL);
+	con_str("NOTE", "no LSE atomics: kernel emulates");
+	con_hex2("INITRD", "lo=", 0x41000000, "hi=", 0x42400000);
 	con_clear(BLUE);
-	con_str("PANIC", "sync exception");
+	con_str("PANIC", "SYNC");
 	con_hex("ESR", 0x96000010);
+	con_skip();
+	con_str("HALT", "hold Power + Vol down to restart");
 	FILE *f = fopen("out/host.ppm", "wb");
 	fprintf(f, "P6 %d %d 255\n", FB_W, FB_H);
 	for (int i = 0; i < FB_W * FB_H; i++) {
