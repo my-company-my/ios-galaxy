@@ -121,7 +121,7 @@ jobs:
           K=dxb/fakeroot/System/Library/Kernels/kernel.development.sweet
           file "$K"
           pip3 install --break-system-packages -q numpy
-          python3 tools/check-armv80.py --strict "$K"
+          python3 tools/check-armv80.py --strict --min-code-kib 4096 "$K"
 
       - name: Package build tree for local compiles
         if: always()

@@ -20,12 +20,15 @@
   and fixed the 4K commpage/VA limit (MACH_VM_MAX_ADDRESS must be the iOS
   0xFC0000000) and missing prototypes. The new LL/SC assembly assembles
   for ARMv8.0. Generated headers were stubbed, so this is not a full build.
-- NOT verified: the kernel has not been compiled yet. The macOS CI job was
-  cancelled before a runner started (runs 43110727956, 43111625356) because
-  GitHub retired the macos-14 image on 2026-11-02. The repo is public now;
-  the workflow uses macos-15 with Xcode 16, and patch 0088 backports
-  IORPC.kernelContent (xnu-11215), which Xcode 16's iig generates. Nothing
-  of the hardware drivers has run on hardware.
+- Kernel built by CI (macos-15, Xcode 16, patches 0001-0088): run
+  43114790052 produced kernel.development.sweet (17 MB); run 43118045181
+  passed the Verify step: all 88 patches have an "Applying patch" line and
+  none was skipped. Its ARMv8.0 check is NOT valid: check-armv80.py had a
+  Mach-O parser bug (the section loop overwrote the load command size), so
+  it scanned less than 1 MiB of the kernel ("0 MiB of code"). Fixed, with
+  a --min-code-kib guard (CI: 4096); a rerun is needed for the real result.
+- NOT verified: nothing has run on the phone. Nothing of the hardware
+  drivers has run on hardware.
 
 ## Decisions taken with the user
 
@@ -72,8 +75,8 @@
 
 ## Next action
 
-1. Get a kernel built (CI with macOS runners, or tools/build-xnu-mac.sh),
-   fix compile errors.
+1. Rerun the CI ARMv8.0 check with the fixed scanner; if the kernel has
+   ARMv8.1+ encodings, find which files and fix the compiler flags.
 2. User: back up the phone (tools/j7-flash.sh backup), build the boot
    image with an empty ramdisk first (shim/build.sh) and check the shim
    screen (CPU line, INITRD line).

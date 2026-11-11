@@ -4,7 +4,7 @@
 
 Este repo es una modificación de [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet), que porta el kernel XNU de Apple (xnu-8796, generación iOS 16) al Redmi Note 10 Pro y llega a la pantalla de inicio de iOS. Aquí el mismo kernel apunta al J7 Neo, y todos los pasos del host funcionan en macOS (Apple Silicon o Intel). Linux ya no es necesario.
 
-> **Estado:** NO probado en el teléfono. El kernel todavía no se compiló (ver `NOTES.md`). El shim (el cargador que arranca S-BOOT) sí está probado en QEMU. Experimental: borra los datos de Android del teléfono.
+> **Estado:** NO probado en el teléfono. El kernel ya compila en GitHub Actions (ver `NOTES.md`). El shim (el cargador que arranca S-BOOT) sí está probado en QEMU. Experimental: borra los datos de Android del teléfono.
 
 ## Qué cambia respecto al original
 
@@ -32,7 +32,7 @@ Este repo es una modificación de [dipa-studio/ios-sweet](https://github.com/dip
   pip3 install numpy pillow
   ```
 - Para instalar TWRP la primera vez: Odin (Windows) o [Heimdall](https://git.sr.ht/~grimler/Heimdall) compilado en el Mac.
-- El kernel: GitHub Actions de este repo (runner macOS) o tu Mac con **Xcode 15.x** (`tools/build-xnu-mac.sh`).
+- El kernel: GitHub Actions de este repo (runner macOS) o tu Mac con **Xcode 15.x o 16.x** (`tools/build-xnu-mac.sh`).
 
 ## Pasos
 
@@ -146,6 +146,6 @@ python3 tools/validate-repo.py
 | --- | --- |
 | `shim/` | cargador bare-metal (C + asm) que S-BOOT arranca como kernel |
 | `xnu/patches/0001-0081` | port original (Redmi), genérico de iOS en su mayoría |
-| `xnu/patches/0082-0087` | J7 Neo: CPU/GIC/páginas 4K, emulación LSE, eMMC, GPIO/I2C/touch/botones/batería, pantalla iPhone 8, USB |
+| `xnu/patches/0082-0088` | J7 Neo: CPU/GIC/páginas 4K, emulación LSE, eMMC, GPIO/I2C/touch/botones/batería, pantalla iPhone 8, USB; compatibilidad con el iig de Xcode 16 |
 | `tools/` | ADT, payload, boot.img, imagen raíz, flasheo, logs, pruebas |
 | `docs/` | notas y README del port original al Redmi |

@@ -5,6 +5,8 @@
 
 --strict: exit 1 if anything is found (used by CI on the kernel itself,
 which must be pure ARMv8.0: the emulation is for user code only).
+--min-code-kib N: exit 1 if a file has less than N KiB of code (a guard
+against a parser bug that scans nothing; CI uses it on the kernel).
 
 The Galaxy J7 Neo's Cortex-A53 is ARMv8.0-A (+CRC, +Crypto). The iPhone 8
 userland targets the A11 (ARMv8.2). This scans the executable mappings of
@@ -47,6 +49,7 @@ PATTERNS = [
     ('fp16',     0x9f60c400, 0x0e400400, False),   # three-same FP16 vector ops
 ]
 SHOW = 8
+MIN_KIB = 0
 
 
 def mappings_dsc(buf):
@@ -69,16 +72,16 @@ def mappings_macho(buf):
     ncmds = struct.unpack_from('<I', buf, 16)[0]
     off, out = 32, []
     for _ in range(ncmds):
-        cmd, size = struct.unpack_from('<II', buf, off)
+        cmd, cmdsize = struct.unpack_from('<II', buf, off)
         if cmd == 0x19:  # LC_SEGMENT_64
             nsects = struct.unpack_from('<I', buf, off + 64)[0]
             for s in range(nsects):
                 so = off + 72 + 80 * s
                 sect, seg = buf[so:so + 16].rstrip(b'\0'), buf[so + 16:so + 32].rstrip(b'\0')
-                addr, size, foff = struct.unpack_from('<QQI', buf, so + 32)
+                addr, ssize, foff = struct.unpack_from('<QQI', buf, so + 32)
                 if seg in (b'__TEXT', b'__TEXT_EXEC') and sect in (b'__text', b'__stubs', b'__auth_stubs'):
-                    out.append((foff, size, addr))
-        off += size
+                    out.append((foff, ssize, addr))
+        off += cmdsize
     return out
 
 
@@ -105,14 +108,21 @@ def scan(path):
                 t[0] += len(hits)
                 for h in hits[:SHOW - len(t[1])]:
                     t[1].append((addr + 4 * int(h), int(w[h])))
-    print(f'{path}: {kind}, {words_seen * 4 >> 20} MiB of code')
+    print(f'{path}: {kind}, {words_seen * 4 >> 10} KiB of code in {len(maps)} ranges')
+    if words_seen * 4 >> 10 < MIN_KIB:
+        sys.exit(f'{path}: less than {MIN_KIB} KiB of code scanned')
     return totals
 
 
 def main():
     args = sys.argv[1:]
+    global MIN_KIB
     strict = '--strict' in args
     args = [a for a in args if a != '--strict']
+    if '--min-code-kib' in args:
+        i = args.index('--min-code-kib')
+        MIN_KIB = int(args[i + 1])
+        del args[i:i + 2]
     if not args:
         sys.exit(__doc__)
     grand = {}
