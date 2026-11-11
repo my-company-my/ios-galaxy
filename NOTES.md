@@ -4,7 +4,7 @@
 
 - Ported from dipa-studio/ios-sweet (Redmi Note 10 Pro, reached the iOS home
   screen). Nothing of the J7 port has run on the phone yet.
-- Verified here: the XNU patch series 0001-0087 applies to xnu-8796.141.3
+- Verified here: the XNU patch series 0001-0088 applies to xnu-8796.141.3
   (local apply of the series, the patched tree equals the edited one); the
   shim builds with clang + ld.lld and, in QEMU (virt, GIC-400, Cortex-A53),
   finds the payload in the ramdisk or appended, moves the boot core to
@@ -22,11 +22,27 @@
   for ARMv8.0. Generated headers were stubbed, so this is not a full build.
 - Kernel built by CI (macos-15, Xcode 16, patches 0001-0088): run
   43114790052 produced kernel.development.sweet (17 MB); run 43118045181
-  passed the Verify step: all 88 patches have an "Applying patch" line and
-  none was skipped. Its ARMv8.0 check is NOT valid: check-armv80.py had a
-  Mach-O parser bug (the section loop overwrote the load command size), so
-  it scanned less than 1 MiB of the kernel ("0 MiB of code"). Fixed, with
-  a --min-code-kib guard (CI: 4096); a rerun is needed for the real result.
+  passed the Verify step, but its ARMv8.0 check was not valid:
+  check-armv80.py stopped after the first load command (the section loop
+  overwrote the command size) and scanned < 1 MiB ("0 MiB of code").
+- With the scanner fixed (d9de668), run 43119622639 scanned 8922 KiB of
+  the kernel and found 1108 LSE encodings (115 CAS, 11 CASP, 982 LDADD/
+  SWP/LDCLR/...): that kernel would stop at the first atomic on the A53.
+  Cause (observed with clang 18 here): for an Apple target, -march alone
+  leaves -target-cpu apple-m1, and LLVM adds that CPU's features: LSE,
+  RCPC, FP16, dotprod, SHA3, and __ARM_FEATURE_ATOMICS is defined. Fix in
+  0082: -mcpu=cortex-a53 (target-cpu cortex-a53; CRC, AES, SHA2 stay).
+  The commpage PFZ trylock used an unconditional casa, which the assembler
+  rejects for cortex-a53: it now uses LDAXR/STXR when
+  __ARM_FEATURE_ATOMICS is not defined. Tested here: the two real PFZ
+  functions, built both ways, give the same results in 7 cases on
+  unicorn (Cortex-A53 model for LL/SC, max CPU for casa); casa on the A53
+  model raises an exception. Not yet seen: a CI build with these flags.
+- check-armv80.py now reads every instruction section (S_ATTR_*_INSTRUCTIONS:
+  __commpage_text, __KLD...), detects MSR/MRS of PAN, UAO, DIT, SSBS, names
+  the function of each hit and has a --min-code-kib guard (CI: 4096).
+  tools/test/check_armv80_test.py tests it on clang Mach-O objects (the
+  original scanner fails 6 of its 11 checks).
 - NOT verified: nothing has run on the phone. Nothing of the hardware
   drivers has run on hardware.
 
@@ -75,8 +91,9 @@
 
 ## Next action
 
-1. Rerun the CI ARMv8.0 check with the fixed scanner; if the kernel has
-   ARMv8.1+ encodings, find which files and fix the compiler flags.
+1. CI build with -mcpu=cortex-a53: fix any compile error the new flags
+   cause (code gated on Apple's __ARM_ARCH_8_x__ macros), then the Verify
+   step must report no post-ARMv8.0 encodings in >= 4 MiB of code.
 2. User: back up the phone (tools/j7-flash.sh backup), build the boot
    image with an empty ramdisk first (shim/build.sh) and check the shim
    screen (CPU line, INITRD line).

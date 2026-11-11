@@ -5,7 +5,7 @@
  MACHINE_FLAGS_ARM64_VMAPPLE = -DARM64_BOARD_CONFIG_VMAPPLE              -march=armv8.5a
  MACHINE_FLAGS_ARM64_BCM2837 = -DARM64_BOARD_CONFIG_BCM2837
 -MACHINE_FLAGS_ARM64_SWEET = -DARM64_BOARD_CONFIG_SWEET                -march=armv8.2-a+crypto
-+MACHINE_FLAGS_ARM64_SWEET = -DARM64_BOARD_CONFIG_SWEET                -march=armv8-a+crc+crypto -mtune=cortex-a53 -mfix-cortex-a53-835769
++MACHINE_FLAGS_ARM64_SWEET = -DARM64_BOARD_CONFIG_SWEET                -mcpu=cortex-a53 -mfix-cortex-a53-835769
  
  
  #
@@ -802,3 +802,43 @@
  	/* The following two are kludged for backward
  	 * compatibility. Use hw.product/hw.target for something
  	 * consistent instead. */
+--- a/osfmk/arm/commpage/commpage_asm.s
++++ b/osfmk/arm/commpage/commpage_asm.s
+@@ -273,7 +273,18 @@
+ 	mov		w11, #1			 // locked value = w11 = 1
+ 
+ 	// Try to grab the lock
++#if __ARM_FEATURE_ATOMICS
+ 	casa	w10, w11, [x3]	 // Atomic CAS with acquire barrier
++#else
++	/* ARMv8.0 (SWEET: the Cortex-A53 has no LSE): the same CAS with LL/SC */
++1:	ldaxr	w10, [x3]		 // w10 = lock word, acquire
++	cbnz	w10, 2f			 // held: fail with w10 != 0
++	stxr	w12, w11, [x3]	 // try to store the locked value
++	cbnz	w12, 1b			 // lost the reservation: retry
++	b	3f
++2:	clrex
++3:
++#endif
+ 	cbz		w10, Ltrylock_enqueue_success
+ 
+ 	mov		x0, #-1			// Failed
+@@ -323,7 +334,18 @@
+ 	mov		w10, wzr		 // unlock value = w10 = 0
+ 	mov		w11, #1			 // locked value = w11 = 1
+ 
++#if __ARM_FEATURE_ATOMICS
+ 	casa	w10, w11, [x2]	 // Atomic CAS with acquire barrier
++#else
++	/* ARMv8.0 (SWEET: the Cortex-A53 has no LSE): the same CAS with LL/SC */
++1:	ldaxr	w10, [x2]		 // w10 = lock word, acquire
++	cbnz	w10, 2f			 // held: fail with w10 != 0
++	stxr	w12, w11, [x2]	 // try to store the locked value
++	cbnz	w12, 1b			 // lost the reservation: retry
++	b	3f
++2:	clrex
++3:
++#endif
+ 	cbz		w10, Ltrylock_dequeue_success
+ 
+ 	mov		x0, #-1			// Failed

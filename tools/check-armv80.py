@@ -11,8 +11,9 @@ against a parser bug that scans nothing; CI uses it on the kernel).
 The Galaxy J7 Neo's Cortex-A53 is ARMv8.0-A (+CRC, +Crypto). The iPhone 8
 userland targets the A11 (ARMv8.2). This scans the executable mappings of
 dyld shared cache files (dyld_shared_cache_arm64 and its .01, .02 ...
-subcaches, from the SystemOS cryptex) or the __TEXT,__text of plain
-Mach-O files, and counts encodings of:
+subcaches, from the SystemOS cryptex) or every instruction section of plain
+Mach-O files (S_ATTR_PURE/SOME_INSTRUCTIONS: __text, __stubs, the kernel's
+__commpage_text, __KLD...), and counts encodings of:
 
   lse       CAS*, CASP*, LD<op>*, ST<op>*, SWP*  (ARMv8.1)  -> emulated by the
             kernel (osfmk/arm64/sweet_lse.c), one trap each: slow if frequent
@@ -22,6 +23,7 @@ Mach-O files, and counts encodings of:
   dotprod   SDOT/UDOT vector (ARMv8.2 optional, A13+)         -> NOT emulated
   rdm       SQRDMLAH/SQRDMLSH vector (ARMv8.1)                -> NOT emulated
   fp16      half-precision vector arithmetic (ARMv8.2)        -> NOT emulated
+  pstate    MSR/MRS of PAN, UAO, DIT, SSBS (ARMv8.1-8.5)      -> NOT emulated
 
 Code reached only after a CPU feature check (hw.optional.arm.FEAT_*,
 the commpage capability bits) is fine; unconditional use is not. A
@@ -30,7 +32,7 @@ encoding, literal data inside code sections can match too. Addresses are
 printed so they can be symbolicated (e.g. `ipsw dyld a2s CACHE ADDR`).
 Needs numpy (pip3 install numpy).
 """
-import struct, sys
+import bisect, collections, struct, sys
 
 try:
     import numpy as np
@@ -47,7 +49,17 @@ PATTERNS = [
     ('dotprod',  0x9fe0fc00, 0x0e809400, False),   # SDOT/UDOT (vector), any U
     ('rdm',      0xbf20f400, 0x2e008400, False),   # SQRDMLAH/SQRDMLSH (vector)
     ('fp16',     0x9f60c400, 0x0e400400, False),   # three-same FP16 vector ops
+    # PSTATE fields the A53 lacks: MSR (immediate), then MRS/MSR (register)
+    ('pstate',   0xfffff0ff, 0xd500409f, False),   # MSR PAN, #imm   (ARMv8.1)
+    ('pstate',   0xfffff0ff, 0xd500407f, False),   # MSR UAO, #imm   (ARMv8.2)
+    ('pstate',   0xfffff0ff, 0xd503405f, False),   # MSR DIT, #imm   (ARMv8.4)
+    ('pstate',   0xfffff0ff, 0xd503403f, False),   # MSR SSBS, #imm  (ARMv8.5)
+    ('pstate',   0xffdfffe0, 0xd5184260, False),   # MRS/MSR PAN
+    ('pstate',   0xffdfffe0, 0xd5184280, False),   # MRS/MSR UAO
+    ('pstate',   0xffdfffe0, 0xd51b42a0, False),   # MRS/MSR DIT
+    ('pstate',   0xffdfffe0, 0xd51b42c0, False),   # MRS/MSR SSBS
 ]
+S_ATTR_PURE_INSTRUCTIONS, S_ATTR_SOME_INSTRUCTIONS = 0x80000000, 0x400
 SHOW = 8
 MIN_KIB = 0
 
@@ -67,6 +79,7 @@ def mappings_dsc(buf):
 
 
 def mappings_macho(buf):
+    """(file offset, size, address) of every section that holds instructions."""
     if struct.unpack_from('<I', buf, 0)[0] != 0xfeedfacf:
         return None
     ncmds = struct.unpack_from('<I', buf, 16)[0]
@@ -77,25 +90,61 @@ def mappings_macho(buf):
             nsects = struct.unpack_from('<I', buf, off + 64)[0]
             for s in range(nsects):
                 so = off + 72 + 80 * s
-                sect, seg = buf[so:so + 16].rstrip(b'\0'), buf[so + 16:so + 32].rstrip(b'\0')
                 addr, ssize, foff = struct.unpack_from('<QQI', buf, so + 32)
-                if seg in (b'__TEXT', b'__TEXT_EXEC') and sect in (b'__text', b'__stubs', b'__auth_stubs'):
+                flags = struct.unpack_from('<I', buf, so + 64)[0]
+                stype = flags & 0xff
+                # S_ZEROFILL (1), S_GB_ZEROFILL (12), S_THREAD_LOCAL_ZEROFILL (18) have no file data
+                if flags & (S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS) and stype not in (1, 12, 18) and foff:
                     out.append((foff, ssize, addr))
         off += cmdsize
     return out
+
+
+def symbols_macho(buf):
+    """Sorted (address, name) of the defined section symbols (LC_SYMTAB), or []."""
+    ncmds = struct.unpack_from('<I', buf, 16)[0]
+    off = 32
+    for _ in range(ncmds):
+        cmd, cmdsize = struct.unpack_from('<II', buf, off)
+        if cmd == 0x2:  # LC_SYMTAB
+            symoff, nsyms, stroff, strsize = struct.unpack_from('<IIII', buf, off + 8)
+            syms = []
+            for i in range(nsyms):
+                strx, ntype, nsect, ndesc, value = struct.unpack_from('<IBBHQ', buf, symoff + 16 * i)
+                if ntype & 0xe0 or (ntype & 0x0e) != 0x0e or not strx or strx >= strsize:
+                    continue  # stab, or not defined in a section
+                end = buf.index(b'\0', stroff + strx)
+                name = buf[stroff + strx:end].decode('latin-1')
+                if not name.startswith(('ltmp', 'L')):  # assembler temporaries
+                    syms.append((value, name))
+            syms.sort()
+            return syms
+        off += cmdsize
+    return []
+
+
+def symbolize(syms, addrs, addr):
+    i = bisect.bisect_right(addrs, addr) - 1
+    if i < 0:
+        return ''
+    return f'{syms[i][1]}+0x{addr - syms[i][0]:x}'
 
 
 def scan(path):
     with open(path, 'rb') as f:
         buf = f.read()
     maps = mappings_dsc(buf)
-    kind = 'dyld cache'
+    kind, syms = 'dyld cache', []
     if maps is None:
         maps, kind = mappings_macho(buf), 'Mach-O'
+        if maps is not None:
+            syms = symbols_macho(buf)
     if maps is None:
         print(f'{path}: not a dyld cache or 64-bit Mach-O, skipped')
         return {}
+    saddrs = [a for a, _ in syms]
     totals = {}
+    per_func = collections.Counter()
     words_seen = 0
     for foff, size, addr in maps:
         size -= size % 4
@@ -107,10 +156,20 @@ def scan(path):
                 t = totals.setdefault(name, [0, []])
                 t[0] += len(hits)
                 for h in hits[:SHOW - len(t[1])]:
-                    t[1].append((addr + 4 * int(h), int(w[h])))
-    print(f'{path}: {kind}, {words_seen * 4 >> 10} KiB of code in {len(maps)} ranges')
+                    a = addr + 4 * int(h)
+                    t[1].append((a, int(w[h]), symbolize(syms, saddrs, a) if syms else ''))
+                if syms:
+                    for h in hits:
+                        f = symbolize(syms, saddrs, addr + 4 * int(h)).rsplit('+', 1)[0]
+                        per_func[(f, name)] += 1
+    print(f'{path}: {kind}, {words_seen * 4 >> 10} KiB of code in {len(maps)} ranges'
+          + (f', {len(syms)} symbols' if syms else ''))
     if words_seen * 4 >> 10 < MIN_KIB:
         sys.exit(f'{path}: less than {MIN_KIB} KiB of code scanned')
+    if per_func:
+        print(f'functions with hits ({len(per_func)}, most first):')
+        for (f, name), n in per_func.most_common(40):
+            print(f'  {n:6d}  {name:9}  {f}')
     return totals
 
 
@@ -140,8 +199,8 @@ def main():
         tag = 'emulated by the kernel' if emulated[name] else 'NOT EMULATED'
         bad |= not emulated[name]
         print(f'{name:9} {n:9d}  ({tag})')
-        for addr, word in samples:
-            print(f'          0x{addr:x}: 0x{word:08x}')
+        for addr, word, sym in samples:
+            print(f'          0x{addr:x}: 0x{word:08x}  {sym}')
     if bad:
         print('\nSome encodings are not emulated: check whether that code runs without a feature check.')
     if strict:
