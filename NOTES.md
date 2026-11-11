@@ -20,9 +20,11 @@
   and fixed the 4K commpage/VA limit (MACH_VM_MAX_ADDRESS must be the iOS
   0xFC0000000) and missing prototypes. The new LL/SC assembly assembles
   for ARMv8.0. Generated headers were stubbed, so this is not a full build.
-- NOT verified: the kernel has not been compiled (GitHub Actions run
-  43110727956: the macOS job was cancelled before a runner started; the
-  account must allow macOS runners, or use tools/build-xnu-mac.sh). Nothing
+- NOT verified: the kernel has not been compiled yet. The macOS CI job was
+  cancelled before a runner started (runs 43110727956, 43111625356) because
+  GitHub retired the macos-14 image on 2026-11-02. The repo is public now;
+  the workflow uses macos-15 with Xcode 16, and patch 0088 backports
+  IORPC.kernelContent (xnu-11215), which Xcode 16's iig generates. Nothing
   of the hardware drivers has run on hardware.
 
 ## Decisions taken with the user

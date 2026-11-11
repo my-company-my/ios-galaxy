@@ -4,9 +4,9 @@
 #
 #   tools/build-xnu-mac.sh [WORKDIR]          (default ~/xnu-j7-build)
 #
-# Needs Xcode 15.x (Xcode 16's iig emits IORPC.kernelContent, which
-# xnu-8796 lacks) installed as /Applications/Xcode_15*.app or selected with
-# xcode-select, Homebrew, and a few GB of disk. The kernel ends in
+# Needs Xcode 15.x or 16.x (patch 0088 makes xnu-8796 accept Xcode 16's
+# iig output; the CI uses Xcode 16 on macos-15), Homebrew, and a few GB of
+# disk. With several Xcodes installed it takes the oldest 15.x/16.x. The kernel ends in
 # xnu/out/kernel.development.sweet.
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -15,14 +15,14 @@ DXB_REPO=https://github.com/blacktop/darwin-xnu-build
 DXB_SHA=663906528d1cd5ea8fde7de6f16de73db9511549
 
 [[ $(uname) == Darwin ]] || { echo "macOS only" >&2; exit 1; }
-xc=$(ls -d /Applications/Xcode_15*.app /Applications/Xcode-15*.app 2>/dev/null | sort -V | head -1 || true)
+xc=$(ls -d /Applications/Xcode_1[56]*.app /Applications/Xcode-1[56]*.app 2>/dev/null | sort -V | head -1 || true)
 if [ -n "$xc" ]; then
 	export DEVELOPER_DIR="$xc/Contents/Developer"
 fi
 ver=$(xcodebuild -version | awk 'NR==1{print $2}')
 case $ver in
-15.*) echo "Xcode $ver" ;;
-*) echo "error: Xcode $ver; xnu-8796 needs Xcode 15.x (download it from developer.apple.com, install as /Applications/Xcode_15.4.app)" >&2; exit 1 ;;
+15.* | 16.*) echo "Xcode $ver" ;;
+*) echo "error: Xcode $ver; use Xcode 15.x or 16.x (developer.apple.com/download/all, install as /Applications/Xcode_16.4.app)" >&2; exit 1 ;;
 esac
 
 brew install jq gum bash cmake ninja

@@ -1,0 +1,55 @@
+--- a/iokit/IOKit/IORPC.h
++++ b/iokit/IOKit/IORPC.h
+@@ -224,6 +224,15 @@
+ 	IORPCMessageMach * reply;
+ 	uint32_t           sendSize;
+ 	uint32_t           replySize;
++#ifdef KERNEL
++	/*
++	 * The IORPCMessage inside message, filled in by the kernel. Backported
++	 * from xnu-11215 (macOS 15): the iig of Xcode 16 generates code that
++	 * reads it, and Xcode 15 (which matches xnu-8796) is no longer on
++	 * GitHub's macOS runners (macos-14 retired on 2026-11-02).
++	 */
++	IORPCMessage     * kernelContent;
++#endif /* KERNEL */
+ };
+ typedef struct IORPC IORPC;
+ 
+--- a/iokit/DriverKit/IORPC.h
++++ b/iokit/DriverKit/IORPC.h
+@@ -224,6 +224,15 @@
+ 	IORPCMessageMach * reply;
+ 	uint32_t           sendSize;
+ 	uint32_t           replySize;
++#ifdef KERNEL
++	/*
++	 * The IORPCMessage inside message, filled in by the kernel. Backported
++	 * from xnu-11215 (macOS 15): the iig of Xcode 16 generates code that
++	 * reads it, and Xcode 15 (which matches xnu-8796) is no longer on
++	 * GitHub's macOS runners (macos-14 retired on 2026-11-02).
++	 */
++	IORPCMessage     * kernelContent;
++#endif /* KERNEL */
+ };
+ typedef struct IORPC IORPC;
+ 
+--- a/iokit/Kernel/IOUserServer.cpp
++++ b/iokit/Kernel/IOUserServer.cpp
+@@ -3209,7 +3209,7 @@
+ 		msgout = (typeof(msgout))ikm_header(replykmsg);
+ 	}
+ 
+-	IORPC rpc = { .message = msgin, .reply = msgout, .sendSize = msgin->msgh.msgh_size, .replySize = replyAlloc };
++	IORPC rpc = { .message = msgin, .reply = msgout, .sendSize = msgin->msgh.msgh_size, .replySize = replyAlloc, .kernelContent = message };
+ 
+ 	if (object) {
+ 		kern_allocation_name_t prior;
+@@ -3358,6 +3358,7 @@
+ 	rpc.sendSize  = mach->msgh.msgh_size;
+ 	rpc.reply     = (IORPCMessageMach *) (p + inSize);
+ 	rpc.replySize = ((uint32_t) (sizeof(buffer.buffer) - inSize));    // inSize was checked
++	rpc.kernelContent = message;
+ 
+ 	message->objects[0] = 0;
+ 	if ((action = OSDynamicCast(OSAction, object))) {

@@ -66,9 +66,9 @@ jobs:
             qemu-out/fb.png
 
   build:
-    # macos-14 still ships Xcode 15.x: its iig matches the xnu-8796 IORPC ABI
-    # (Xcode 16's iig emits IORPC.kernelContent, which this xnu lacks)
-    runs-on: macos-14
+    # macos-14 (Xcode 15) was retired on 2026-11-02. Xcode 16's iig emits
+    # IORPC.kernelContent: patch 0088 backports that field from xnu-11215.
+    runs-on: macos-15
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
