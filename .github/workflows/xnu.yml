@@ -104,7 +104,24 @@ jobs:
         env:
           # keep going after errors so one run reports every compile failure
           MAKEFLAGS: ${{ inputs.keep_going == 'false' && '' || '-k' }}
-        run: bash build.sh
+        run: |
+          set -o pipefail
+          bash build.sh 2>&1 | tee ../build.log
+
+      - name: Verify (every repo patch applied, kernel is ARMv8.0 only)
+        run: |
+          # dxb skips a patch that does not apply with only a warning.
+          if grep -E 'Skipping patch .*/[0-9]{4}-' build.log; then
+            echo "::error::a repository patch was skipped"; exit 1
+          fi
+          for p in xnu/patches/*.patch; do
+            grep -q "Applying patch: .*/$(basename "$p")" build.log || { echo "::error::$p not applied"; exit 1; }
+          done
+          echo "all $(ls xnu/patches/*.patch | wc -l) patches applied"
+          K=dxb/fakeroot/System/Library/Kernels/kernel.development.sweet
+          file "$K"
+          pip3 install --break-system-packages -q numpy
+          python3 tools/check-armv80.py --strict "$K"
 
       - name: Package build tree for local compiles
         if: always()

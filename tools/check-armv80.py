@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Find instructions newer than ARMv8.0 in iOS code (dyld shared cache or Mach-O).
 
-  check-armv80.py FILE [FILE...]
+  check-armv80.py [--strict] FILE [FILE...]
+
+--strict: exit 1 if anything is found (used by CI on the kernel itself,
+which must be pure ARMv8.0: the emulation is for user code only).
 
 The Galaxy J7 Neo's Cortex-A53 is ARMv8.0-A (+CRC, +Crypto). The iPhone 8
 userland targets the A11 (ARMv8.2). This scans the executable mappings of
@@ -107,10 +110,13 @@ def scan(path):
 
 
 def main():
-    if len(sys.argv) < 2:
+    args = sys.argv[1:]
+    strict = '--strict' in args
+    args = [a for a in args if a != '--strict']
+    if not args:
         sys.exit(__doc__)
     grand = {}
-    for p in sys.argv[1:]:
+    for p in args:
         for name, (n, samples) in scan(p).items():
             g = grand.setdefault(name, [0, []])
             g[0] += n
@@ -128,6 +134,8 @@ def main():
             print(f'          0x{addr:x}: 0x{word:08x}')
     if bad:
         print('\nSome encodings are not emulated: check whether that code runs without a feature check.')
+    if strict:
+        sys.exit(1)
 
 
 if __name__ == '__main__':
