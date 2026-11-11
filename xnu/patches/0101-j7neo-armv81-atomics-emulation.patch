@@ -1,0 +1,446 @@
+--- /dev/null
++++ b/osfmk/arm64/sweet_lse.c
+@@ -0,0 +1,263 @@
++/*
++ * Galaxy J7 Neo (Cortex-A53, ARMv8.0): trap-and-emulate the ARMv8.1 LSE
++ * atomics (CAS*, CASP*, LD<op>*, ST<op>*, SWP*) and ARMv8.3 LDAPR* for
++ * 64-bit user processes.
++ *
++ * The iOS 16 userland targets the A11 (ARMv8.2). If any binary uses these
++ * instructions unconditionally, the A53 raises an "unknown reason"
++ * exception (ESR EC 0) for them; handle_uncategorized() calls
++ * sweet_lse_emulate() before it turns the trap into SIGILL. Each emulated
++ * operation is a single atomic LL/SC compare-and-swap on the user address
++ * (osfmk/arm64/copyio.c, machine_routines_asm.s), so it stays atomic
++ * against both other emulated operations and native LDXR/STXR code on
++ * other cores. Every emulated instruction costs a trap: the counter
++ * sweet_lse_emulated and the first few logged PCs show whether this path
++ * is hot (tools/check-armv80.py finds such instructions offline).
++ */
++#include <pexpert/arm64/board_config.h>
++
++#if defined(SWEET)
++#include <stdint.h>
++#include <stdbool.h>
++#include <sys/errno.h>
++#include <mach/vm_param.h>
++#include <machine/atomic.h>
++#include <arm64/proc_reg.h>
++#include <arm/thread.h>
++#include <kern/misc_protos.h>
++#include <kern/thread.h>
++#include <kern/task.h>
++#include <mach/arm/thread_status.h>
++
++extern int sweet_cas_user(user_addr_t addr, uint64_t expected, uint64_t desired,
++    unsigned size_log2, uint64_t *old);
++extern int sweet_casp_user(user_addr_t addr, uint64_t exp_lo, uint64_t exp_hi,
++    uint64_t new_lo, uint64_t new_hi, bool is64, uint64_t old[2]);
++extern int copyin_atomic32(const user_addr_t user_addr, uint32_t *kernel_addr);
++extern int copyin_atomic64(const user_addr_t user_addr, uint64_t *kernel_addr);
++
++bool sweet_lse_emulate(arm_saved_state_t *state, uint32_t instr);
++
++uint64_t _Atomic sweet_lse_emulated;
++static uint32_t _Atomic sweet_lse_logged;
++
++/* Xn for n in 0..30; 31 is XZR here (Rs/Rt operands). */
++static uint64_t
++reg_get(arm_saved_state_t *state, unsigned n)
++{
++	arm_saved_state64_t *ss = saved_state64(state);
++	if (n < 29) {
++		return ss->x[n];
++	}
++	if (n == 29) {
++		return ss->fp;
++	}
++	if (n == 30) {
++		return ss->lr;
++	}
++	return 0;
++}
++
++static void
++reg_set(arm_saved_state_t *state, unsigned n, uint64_t v)
++{
++	if (n == 31) {
++		return; /* XZR: discarded (the ST<op> aliases) */
++	}
++	if (n == 30) {
++		set_saved_state_lr(state, v);
++	} else if (n == 29) {
++		set_saved_state_fp(state, v);
++	} else {
++		set_saved_state_reg(state, n, v);
++	}
++}
++
++/* Base register: SP when n == 31. TBI: the top byte is not part of the address. */
++static user_addr_t
++base_addr(arm_saved_state_t *state, unsigned n)
++{
++	uint64_t a = n == 31 ? get_saved_state_sp(state) : reg_get(state, n);
++	return (user_addr_t)(a & 0x00ffffffffffffffULL);
++}
++
++static uint64_t
++size_mask(unsigned size_log2)
++{
++	return size_log2 == 3 ? ~0ULL : ((1ULL << (8u << size_log2)) - 1);
++}
++
++static int64_t
++sign_extend(uint64_t v, unsigned size_log2)
++{
++	unsigned bits = 8u << size_log2;
++	if (bits == 64) {
++		return (int64_t)v;
++	}
++	uint64_t m = 1ULL << (bits - 1);
++	v &= size_mask(size_log2);
++	return (int64_t)((v ^ m) - m);
++}
++
++/* Value written back to a W/X register: 32-bit and smaller ops zero-extend. */
++static uint64_t
++result_value(uint64_t v, unsigned size_log2)
++{
++	return v & size_mask(size_log2);
++}
++
++/*
++ * Single-copy atomic read without writing (LDAPR must work on read-only
++ * pages): bytes and halfwords come from the naturally aligned word that
++ * contains them.
++ */
++static int
++read_user(user_addr_t addr, unsigned size_log2, uint64_t *out)
++{
++	if (size_log2 == 3) {
++		return copyin_atomic64(addr, out);
++	}
++	if (addr & ((1u << size_log2) - 1)) {
++		return EINVAL;
++	}
++	uint32_t w;
++	int error = copyin_atomic32(addr & ~3ULL, &w);
++	if (error) {
++		return error;
++	}
++	*out = (w >> (8 * (addr & 3))) & size_mask(size_log2);
++	return 0;
++}
++
++static bool
++emulate_cas(arm_saved_state_t *state, uint32_t instr)
++{
++	unsigned size_log2 = instr >> 30;
++	unsigned rs = (instr >> 16) & 31, rn = (instr >> 5) & 31, rt = instr & 31;
++	user_addr_t addr = base_addr(state, rn);
++	uint64_t expected = reg_get(state, rs) & size_mask(size_log2);
++	uint64_t desired = reg_get(state, rt) & size_mask(size_log2);
++	uint64_t old;
++
++	if (sweet_cas_user(addr, expected, desired, size_log2, &old)) {
++		return false;
++	}
++	reg_set(state, rs, result_value(old, size_log2));
++	return true;
++}
++
++static bool
++emulate_casp(arm_saved_state_t *state, uint32_t instr)
++{
++	bool is64 = (instr >> 30) & 1;
++	unsigned rs = (instr >> 16) & 31, rn = (instr >> 5) & 31, rt = instr & 31;
++	if ((rs & 1) || (rt & 1)) {
++		return false; /* UNDEFINED encodings stay SIGILL */
++	}
++	uint64_t m = is64 ? ~0ULL : 0xffffffffULL;
++	uint64_t old[2];
++	if (sweet_casp_user(base_addr(state, rn),
++	    reg_get(state, rs) & m, reg_get(state, rs + 1) & m,
++	    reg_get(state, rt) & m, reg_get(state, rt + 1) & m, is64, old)) {
++		return false;
++	}
++	reg_set(state, rs, old[0] & m);
++	reg_set(state, rs + 1, old[1] & m);
++	return true;
++}
++
++/* LD<op>, ST<op> (Rt = XZR), SWP and LDAPR. */
++static bool
++emulate_rmw(arm_saved_state_t *state, uint32_t instr)
++{
++	unsigned size_log2 = instr >> 30;
++	unsigned rs = (instr >> 16) & 31, rn = (instr >> 5) & 31, rt = instr & 31;
++	unsigned o3 = (instr >> 15) & 1, opc = (instr >> 12) & 7;
++	user_addr_t addr = base_addr(state, rn);
++	uint64_t mask = size_mask(size_log2);
++	uint64_t operand = reg_get(state, rs) & mask;
++	uint64_t old, next, seen;
++
++	if (o3 && opc == 4) {
++		/* LDAPR: load-acquire (RCpc). Rs must be 31. */
++		if (rs != 31 || read_user(addr, size_log2, &old)) {
++			return false;
++		}
++		__builtin_arm_dmb(DMB_ISH);
++		reg_set(state, rt, result_value(old, size_log2));
++		return true;
++	}
++	if (o3 && opc != 0) {
++		return false;
++	}
++	if (read_user(addr, size_log2, &old)) {
++		return false;
++	}
++	for (unsigned tries = 0;; tries++) {
++		old &= mask;
++		if (o3) {
++			next = operand;                                    /* SWP */
++		} else {
++			switch (opc) {
++			case 0: next = old + operand; break;               /* ADD */
++			case 1: next = old & ~operand; break;              /* CLR */
++			case 2: next = old ^ operand; break;               /* EOR */
++			case 3: next = old | operand; break;               /* SET */
++			case 4: next = sign_extend(old, size_log2) > sign_extend(operand, size_log2) ? old : operand; break; /* SMAX */
++			case 5: next = sign_extend(old, size_log2) < sign_extend(operand, size_log2) ? old : operand; break; /* SMIN */
++			case 6: next = old > operand ? old : operand; break;  /* UMAX */
++			default: next = old < operand ? old : operand; break; /* UMIN */
++			}
++		}
++		next &= mask;
++		if (sweet_cas_user(addr, old, next, size_log2, &seen)) {
++			return false;
++		}
++		if ((seen & mask) == old) {
++			break;
++		}
++		old = seen;
++		if (tries > 1000000) {
++			return false;
++		}
++	}
++	reg_set(state, rt, result_value(old, size_log2));
++	return true;
++}
++
++bool
++sweet_lse_emulate(arm_saved_state_t *state, uint32_t instr)
++{
++	bool ok;
++
++	if (!is_saved_state64(state)) {
++		return false;
++	}
++	if ((instr & 0x3fa07c00) == 0x08a07c00) {
++		ok = emulate_cas(state, instr);                 /* CAS{A,L,AL}{B,H,} */
++	} else if ((instr & 0xbfa07c00) == 0x08207c00) {
++		ok = emulate_casp(state, instr);                /* CASP{A,L,AL} */
++	} else if ((instr & 0x3f200c00) == 0x38200000) {
++		ok = emulate_rmw(state, instr);                 /* LD<op>, ST<op>, SWP, LDAPR */
++	} else {
++		return false;
++	}
++	if (!ok) {
++		return false;
++	}
++	uint64_t n = os_atomic_inc(&sweet_lse_emulated, relaxed);
++	if (os_atomic_load(&sweet_lse_logged, relaxed) < 32 &&
++	    os_atomic_inc_orig(&sweet_lse_logged, relaxed) < 32) {
++		char name[32] = "?";
++		task_t task = current_task();
++		if (task && get_bsdtask_info(task)) {
++			extern void proc_name(int pid, char *buf, int size);
++			extern int proc_selfpid(void);
++			proc_name(proc_selfpid(), name, sizeof(name));
++		}
++		printf("SWEET LSE: emulated #%llu instr 0x%08x at pc 0x%llx in %s\n",
++		    n, instr, (uint64_t)get_saved_state_pc(state), name);
++	}
++	return true;
++}
++#endif /* SWEET */
+--- a/osfmk/conf/files.arm64
++++ b/osfmk/conf/files.arm64
+@@ -41,6 +41,7 @@
+ osfmk/arm/arm_init.c	optional config_pmap_ppl
+ osfmk/arm64/arm_vm_init.c	optional config_pmap_ppl
+ osfmk/arm64/sweet_early.c	standard
++osfmk/arm64/sweet_lse.c	standard
+ osfmk/arm64/arm64_hypercall.c	standard
+ osfmk/arm/io_map.c		standard
+ osfmk/arm64/loose_ends.c	standard
+--- a/osfmk/arm64/machine_routines_asm.s
++++ b/osfmk/arm64/machine_routines_asm.s
+@@ -1311,6 +1311,118 @@
+ 
+ #endif // defined(HAS_APPLE_PAC)
+ 
++#if defined(SWEET)
++/*
++ * int _sweet_cas_user(user_addr_t addr, uint64_t expected, uint64_t desired,
++ *                     unsigned size_log2, uint64_t *old)
++ *
++ * Galaxy J7 Neo (Cortex-A53, no LSE): compare-and-swap on naturally aligned
++ * user memory with LL/SC, for the trap-and-emulate path of ARMv8.1 atomics
++ * (osfmk/arm64/sweet_lse.c). Acquire+release exclusives plus a trailing
++ * DMB ISH give at least the ordering of the strongest LSE variant. *old
++ * receives the value found (zero-extended). Returns 0, or EFAULT through
++ * copyio_error when the access faults.
++ */
++	.text
++	.align 2
++	.globl EXT(_sweet_cas_user)
++LEXT(_sweet_cas_user)
++	ARM64_STACK_PROLOG
++	PUSH_FRAME
++	cmp		w3, #3
++	b.eq	Lsweet_cas64
++	cmp		w3, #2
++	b.eq	Lsweet_cas32
++	cmp		w3, #1
++	b.eq	Lsweet_cas16
++	and		x1, x1, #0xff
++	COPYIO_RECOVER_RANGE Lsweet_cas_done
++Lsweet_cas8:
++	ldaxrb	w8, [x0]
++	cmp		w8, w1
++	b.ne	Lsweet_cas_fail
++	stlxrb	w9, w2, [x0]
++	cbnz	w9, Lsweet_cas8
++	b		Lsweet_cas_done
++Lsweet_cas16:
++	and		x1, x1, #0xffff
++	COPYIO_RECOVER_RANGE Lsweet_cas_done
++Lsweet_cas16_loop:
++	ldaxrh	w8, [x0]
++	cmp		w8, w1
++	b.ne	Lsweet_cas_fail
++	stlxrh	w9, w2, [x0]
++	cbnz	w9, Lsweet_cas16_loop
++	b		Lsweet_cas_done
++Lsweet_cas32:
++	COPYIO_RECOVER_RANGE Lsweet_cas_done
++Lsweet_cas32_loop:
++	ldaxr	w8, [x0]
++	cmp		w8, w1
++	b.ne	Lsweet_cas_fail
++	stlxr	w9, w2, [x0]
++	cbnz	w9, Lsweet_cas32_loop
++	b		Lsweet_cas_done
++Lsweet_cas64:
++	COPYIO_RECOVER_RANGE Lsweet_cas_done
++Lsweet_cas64_loop:
++	ldaxr	x8, [x0]
++	cmp		x8, x1
++	b.ne	Lsweet_cas_fail
++	stlxr	w9, x2, [x0]
++	cbnz	w9, Lsweet_cas64_loop
++	b		Lsweet_cas_done
++Lsweet_cas_fail:
++	clrex
++Lsweet_cas_done:
++	dmb		ish
++	str		x8, [x4]
++	mov		x0, #0
++	POP_FRAME
++	ARM64_STACK_EPILOG
++
++/*
++ * int _sweet_casp_user(user_addr_t addr, uint64_t exp_lo, uint64_t exp_hi,
++ *                      uint64_t new_lo, uint64_t new_hi, unsigned is64,
++ *                      uint64_t old[2])
++ * Pair compare-and-swap (CASP): two 32-bit or two 64-bit words.
++ */
++	.text
++	.align 2
++	.globl EXT(_sweet_casp_user)
++LEXT(_sweet_casp_user)
++	ARM64_STACK_PROLOG
++	PUSH_FRAME
++	cbz		w5, Lsweet_casp32
++	COPYIO_RECOVER_RANGE Lsweet_casp_done
++Lsweet_casp64_loop:
++	ldaxp	x8, x9, [x0]
++	cmp		x8, x1
++	ccmp	x9, x2, #0, eq
++	b.ne	Lsweet_casp_fail
++	stlxp	w10, x3, x4, [x0]
++	cbnz	w10, Lsweet_casp64_loop
++	b		Lsweet_casp_done
++Lsweet_casp32:
++	COPYIO_RECOVER_RANGE Lsweet_casp_done
++Lsweet_casp32_loop:
++	ldaxp	w8, w9, [x0]
++	cmp		w8, w1
++	ccmp	w9, w2, #0, eq
++	b.ne	Lsweet_casp_fail
++	stlxp	w10, w3, w4, [x0]
++	cbnz	w10, Lsweet_casp32_loop
++	b		Lsweet_casp_done
++Lsweet_casp_fail:
++	clrex
++Lsweet_casp_done:
++	dmb		ish
++	stp		x8, x9, [x6]
++	mov		x0, #0
++	POP_FRAME
++	ARM64_STACK_EPILOG
++#endif /* SWEET */
++
+     /* THIS MUST STAY LAST IN THIS FILE */
+ 	COPYIO_RECOVER_TABLE_SYM	copyio_recover_table_end
+ 
+--- a/osfmk/arm64/copyio.c
++++ b/osfmk/arm64/copyio.c
+@@ -375,3 +375,46 @@
+ 	return rc;
+ }
+ #endif
++
++#include <pexpert/arm64/board_config.h>
++#if defined(SWEET)
++extern int _sweet_cas_user(user_addr_t addr, uint64_t expected, uint64_t desired,
++    unsigned size_log2, uint64_t *old);
++extern int _sweet_casp_user(user_addr_t addr, uint64_t exp_lo, uint64_t exp_hi,
++    uint64_t new_lo, uint64_t new_hi, unsigned is64, uint64_t old[2]);
++
++/*
++ * Galaxy J7 Neo: atomic compare-and-swap on user memory for the ARMv8.1
++ * atomics emulation (sweet_lse.c). addr has the user TBI tag stripped by
++ * the caller. Returns 0 (with *old set), EFAULT or EINVAL (misaligned).
++ */
++int
++sweet_cas_user(user_addr_t addr, uint64_t expected, uint64_t desired,
++    unsigned size_log2, uint64_t *old)
++{
++	int result = copy_validate(addr, 0, 1u << size_log2,
++	    COPYIO_IN | COPYIO_OUT | COPYIO_ATOMIC | COPYIO_VALIDATE_USER_ONLY);
++	if (__improbable(result)) {
++		return result;
++	}
++	user_access_enable();
++	result = _sweet_cas_user(addr, expected, desired, size_log2, old);
++	user_access_disable();
++	return result;
++}
++
++int
++sweet_casp_user(user_addr_t addr, uint64_t exp_lo, uint64_t exp_hi,
++    uint64_t new_lo, uint64_t new_hi, bool is64, uint64_t old[2])
++{
++	int result = copy_validate(addr, 0, is64 ? 16 : 8,
++	    COPYIO_IN | COPYIO_OUT | COPYIO_ATOMIC | COPYIO_VALIDATE_USER_ONLY);
++	if (__improbable(result)) {
++		return result;
++	}
++	user_access_enable();
++	result = _sweet_casp_user(addr, exp_lo, exp_hi, new_lo, new_hi, is64 ? 1 : 0, old);
++	user_access_disable();
++	return result;
++}
++#endif /* SWEET */

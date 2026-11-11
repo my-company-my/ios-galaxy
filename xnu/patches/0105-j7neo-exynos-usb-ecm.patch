@@ -1,0 +1,401 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -1,14 +1,24 @@
+ /*
+- * SWEET: USB bring-up, step 1 - read-only state probe.
++ * Galaxy J7 Neo USB: the Exynos 7870 USB 2.0 DRD controller, a Synopsys
++ * DWC3 at 0x13600000 with Samsung's USB DRD PHY at 0x135c0000, used as a
++ * USB device with a CDC ECM network interface (ue0).
+  *
+- * The phone's USB is a Synopsys DWC3 (USB 2.0 only, maximum-speed
+- * high-speed) at 0x0a600000 behind Qualcomm's dwc-usb3-msm wrapper, with a
+- * QUSB2 PHY at 0x088e2000; its power domain is the USB30_PRIM GDSC and its
+- * clocks come from GCC (offsets from Linux gcc-sdmmagpie.c). ABL uses this
+- * controller for fastboot; this probe only reports what state it is left
+- * in after `fastboot boot`. It never writes a register, and it touches the
+- * DWC3 / PHY register blocks only when the GCC status registers say their
+- * power domain and clocks are on (an access to a gated block would hang).
++ * S-BOOT does not start USB on a normal boot, so everything is brought up
++ * here, in the order of Linux (exynos7870 usbdrd PHY, dwc3-exynos, dwc3
++ * core) and of the postmarketOS j7velte port:
++ *   1. S2MU005 MUIC (I2C4, 0x3d): register 0xB5 = 0x24 closes the D+/D-
++ *      switches to the SoC (rootfs/usb-muic.start of the pmOS port; the
++ *      only write to that chip).
++ *   2. PMIC S2MPU05 LDO8 (3.3 V, the PHY's vdd33): enabled only if its
++ *      voltage field already says 3.3 V; nothing else on the PMIC is
++ *      touched.
++ *   3. PMU USBDRD_PHY_CONTROL bit 1: PHY out of isolation.
++ *   4. CMU_FSYS / CMU_MIF clock gates of the controller and PHY.
++ *   5. PHY UTMI init (exynos7870_usbdrd_utmi_init), with VBUS valid forced
++ *      because the VBUS pad is not wired to the controller.
++ *   6. DWC3 global setup: device mode, PHY suspend off.
++ * Boot-arg sweetusb=0 skips all of it; sweetusb=1 (default) also starts
++ * the device side and the network interface.
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <sys/param.h>
+@@ -41,29 +51,66 @@
+ void sweet_usb_probe(void);
+ static void sweet_usb_gadget_start(vm_offset_t dwc);
+ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
++#include "sweet_exynos.h"
+ 
+-#define GCC_PA                  0x00100000
+-#define GCC_SIZE                0x00090000
+-#define GCC_USB30_PRIM_GDSCR    0x0f004         /* bit 31: power on */
+-#define CBCR_CLK_OFF            (1u << 31)
+-
+-static const struct {
+-	const char *name;
+-	uint32_t    off;
+-} usb_cbcr[] = {
+-	{ "master", 0x0f010 },
+-	{ "sleep", 0x0f014 },
+-	{ "utmi", 0x0f018 },
+-	{ "cfg-noc-axi", 0x0502c },
+-	{ "aggre-axi", 0x8201c },
+-	{ "ahb2phy", 0x6a004 },
+-	{ "clkref", 0x8c010 },
+-};
+-
+-#define DWC3_PA                 0x0a600000
+-#define DWC3_SIZE               0x0000d000
+-#define QUSB2_PA                0x088e2000
+-#define QUSB2_SIZE              0x00000400
++#define DWC3_PA                 0x13600000u
++#define DWC3_SIZE               0x0000d000u
++#define USBPHY_PA               0x135c0000u
++#define PMU_USBDRD_PHY_CONTROL  0x10480704u     /* bit 1: EXYNOS7870_USB2PHY_ENABLE */
++#define CMU_FSYS                0x13730000u
++#define CMU_MIF                 0x10460000u
++
++#define MUIC_ADDR               0x3d
++#define MUIC_REG_MANSW          0xb5
++#define MUIC_MANSW_USB          0x24
++#define PMIC_L8CTRL             0x32
++#define PMIC_LDO_VSEL_MASK      0x3f
++#define PMIC_LDO_ENABLE         0xc0
++#define PMIC_L8_3V3             ((3300000 - 1800000) / 25000)   /* ldo3 type: 1.8 V + 25 mV steps */
++
++/* USB DRD PHY (Linux phy-exynos5-usbdrd.c) */
++#define PHY_LINKSYSTEM          0x04
++#define   LINKSYSTEM_XHCI_VERSION_CONTROL (1u << 27)
++#define   LINKSYSTEM_FORCE_VBUSVALID      (1u << 8)
++#define   LINKSYSTEM_FORCE_BVALID         (1u << 7)
++#define   LINKSYSTEM_FLADJ_MASK           (0x3fu << 1)
++#define PHY_UTMI                0x08
++#define   PHYUTMI_VBUSVLDEXTSEL  (1u << 10)
++#define   PHYUTMI_VBUSVLDEXT     (1u << 9)
++#define   PHYUTMI_OTGDISABLE     (1u << 6)
++#define   PHYUTMI_DRVVBUS        (1u << 4)
++#define   PHYUTMI_DPPULLDOWN     (1u << 3)
++#define   PHYUTMI_DMPULLDOWN     (1u << 2)
++#define   PHYUTMI_FORCESUSPEND   (1u << 1)
++#define   PHYUTMI_FORCESLEEP     (1u << 0)
++#define PHY_CLKRST              0x10
++#define   PHYCLKRST_EN_UTMISUSPEND (1u << 31)
++#define   PHYCLKRST_FSEL_PIPE    (7u << 8)
++#define   PHYCLKRST_FSEL_UTMI    (7u << 5)
++#define   PHYCLKRST_REFCLKSEL    (3u << 2)
++#define   PHYCLKRST_REFCLKSEL_PAD (2u << 2)
++#define   PHYCLKRST_PORTRESET    (1u << 1)
++#define   PHYCLKRST_COMMONONN    (1u << 0)
++#define PHY_PARAM0              0x1c
++#define PHY_LINKPORT            0x44
++#define   LINKPORT_OVCR_U3_SEL   (1u << 3)
++#define   LINKPORT_OVCR_U2_SEL   (1u << 2)
++#define PHY_HSPHYCTRL           0x54
++#define   HSPHYCTRL_PHYSWRSTALL  (1u << 31)
++#define   HSPHYCTRL_SIDDQ        (1u << 6)
++#define   HSPHYCTRL_PHYSWRST     (1u << 0)
++#define PHY_HSPHYPLLTUNE        0x70
++#define   HSPHYPLLTUNE_PLL_B_TUNE (1u << 6)
++#define   HSPHYPLLTUNE_PLL_P_TUNE (0xfu)
++
++/* DWC3 global registers */
++#define GSNPSID                 0xc120
++#define GCTL_REG                0xc110
++#define   GCTL_PRTCAPDIR_MASK    (3u << 12)
++#define   GCTL_PRTCAPDIR_DEVICE  (2u << 12)
++#define   GCTL_SCALEDOWN_MASK    (3u << 4)
++#define GUSB2PHYCFG             0xc200
++#define   GUSB2PHYCFG_SUSPHY     (1u << 6)
+ 
+ static uint32_t
+ usb_rd(vm_offset_t base, uint32_t off)
+@@ -73,34 +120,142 @@
+ 	return v;
+ }
+ 
++static void
++usb_wr(vm_offset_t base, uint32_t off, uint32_t v)
++{
++	*(volatile uint32_t *)(base + off) = v;
++	__asm__ volatile ("dsb sy" ::: "memory");
++}
++
++/* UTMI reference clock select from the USB PLL rate (exynos5_rate_to_clk). */
++static int
++usb_refclk_fsel(uint64_t hz, uint32_t *fsel)
++{
++	static const struct { uint32_t hz, fsel; } t[] = {
++		{ 9600000, 0 }, { 10000000, 1 }, { 12000000, 2 }, { 19200000, 3 },
++		{ 20000000, 4 }, { 24000000, 5 }, { 26000000, 6 }, { 50000000, 7 },
++	};
++	for (unsigned i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
++		/* Within 0.1 %: the PLL rate is computed from M/P/S. */
++		if (hz + hz / 1000 >= t[i].hz && hz <= t[i].hz + t[i].hz / 1000) {
++			*fsel = t[i].fsel;
++			return 0;
++		}
++	}
++	return EINVAL;
++}
++
++static int
++usb_power_and_phy(void)
++{
++	uint8_t v = 0;
++	int error;
++
++	/* 1. MUIC: route D+/D- to the SoC. */
++	error = sweet_i2c_write8(SWEET_I2C4, MUIC_ADDR, MUIC_REG_MANSW, MUIC_MANSW_USB);
++	printf("SWEET USB: MUIC MANSW=0x%02x %s\n", MUIC_MANSW_USB, error ? "FAILED" : "set");
++	if (error) {
++		return error;
++	}
++	/* 2. PHY 3.3 V supply. */
++	error = sweet_pmic_read8(PMIC_L8CTRL, &v);
++	if (error) {
++		return error;
++	}
++	if ((v & PMIC_LDO_VSEL_MASK) != PMIC_L8_3V3) {
++		printf("SWEET USB: PMIC LDO8 0x%02x is not programmed to 3.3 V: left alone\n", v);
++		return EINVAL;
++	}
++	if ((v & PMIC_LDO_ENABLE) != PMIC_LDO_ENABLE) {
++		error = sweet_pmic_write8(PMIC_L8CTRL, v | PMIC_LDO_ENABLE);
++		delay(1000);    /* S2MPU05_ENABLE_TIME_LDO 128 us */
++		if (error) {
++			return error;
++		}
++	}
++	printf("SWEET USB: LDO8 (3.3 V) was 0x%02x, now on\n", v);
++
++	/* 3. PHY out of isolation, 4. clocks. */
++	sweet_soc_set_bits(PMU_USBDRD_PHY_CONTROL, 1u << 1);
++	sweet_soc_set_bits(CMU_MIF + 0x29c, 1u << 21);         /* mux usb20drd refclk gate */
++	sweet_soc_set_bits(CMU_MIF + 0x89c, 1u << 0);          /* gout_mif_cmu_fsys_usb20drd_refclk */
++	sweet_soc_set_bits(CMU_FSYS + 0x200, (1u << 21) | (1u << 12)); /* usb_pll mux */
++	sweet_soc_set_bits(CMU_FSYS + 0x230, (1u << 21) | (1u << 12)); /* usb20drd phyclock user */
++	sweet_soc_set_bits(CMU_FSYS + 0x804, (1u << 20) | (1u << 21)); /* aclk_hsdrd, hclk_usb20_ctrl */
++	sweet_soc_set_bits(CMU_FSYS + 0x828, 1u << 0);         /* hsdrd_ref_clk */
++
++	uint64_t ref = sweet_pll1417x_hz(CMU_FSYS + 0x100);
++	uint32_t fsel = 0;
++	if (usb_refclk_fsel(ref, &fsel)) {
++		printf("SWEET USB: USB PLL at %llu Hz is not a PHY reference rate\n", ref);
++		return EINVAL;
++	}
++
++	/* 5. PHY UTMI init, step by step as exynos7870_usbdrd_utmi_init. */
++	vm_offset_t phy = ml_io_map(USBPHY_PA, 0x100);
++	if (phy == 0) {
++		return ENXIO;
++	}
++	uint32_t reg = usb_rd(phy, PHY_CLKRST);
++	reg = (reg & ~PHYCLKRST_REFCLKSEL) | PHYCLKRST_REFCLKSEL_PAD;
++	reg &= ~(PHYCLKRST_FSEL_UTMI | PHYCLKRST_FSEL_PIPE);
++	reg |= fsel << 5;
++	reg |= PHYCLKRST_EN_UTMISUSPEND | PHYCLKRST_COMMONONN | PHYCLKRST_PORTRESET;
++	usb_wr(phy, PHY_CLKRST, reg);
++	delay(10);
++	usb_wr(phy, PHY_CLKRST, reg & ~PHYCLKRST_PORTRESET);
++
++	reg = usb_rd(phy, PHY_HSPHYPLLTUNE);
++	reg = fsel == 5 ? (reg | HSPHYPLLTUNE_PLL_B_TUNE) : (reg & ~HSPHYPLLTUNE_PLL_B_TUNE);
++	reg = (reg & ~HSPHYPLLTUNE_PLL_P_TUNE) | 14;
++	usb_wr(phy, PHY_HSPHYPLLTUNE, reg);
++
++	reg = usb_rd(phy, PHY_HSPHYCTRL);
++	reg &= ~(HSPHYCTRL_SIDDQ | HSPHYCTRL_PHYSWRST | HSPHYCTRL_PHYSWRSTALL);
++	usb_wr(phy, PHY_HSPHYCTRL, reg);
++	delay(500);
++
++	reg = usb_rd(phy, PHY_LINKSYSTEM);
++	reg |= LINKSYSTEM_XHCI_VERSION_CONTROL;
++	reg = (reg & ~LINKSYSTEM_FLADJ_MASK) | (0x20u << 1);
++	reg |= LINKSYSTEM_FORCE_BVALID | LINKSYSTEM_FORCE_VBUSVALID;
++	usb_wr(phy, PHY_LINKSYSTEM, reg);
++
++	reg = usb_rd(phy, PHY_UTMI);
++	reg &= ~(PHYUTMI_FORCESLEEP | PHYUTMI_FORCESUSPEND | PHYUTMI_DMPULLDOWN |
++	    PHYUTMI_DPPULLDOWN | PHYUTMI_DRVVBUS);
++	reg |= PHYUTMI_VBUSVLDEXTSEL | PHYUTMI_VBUSVLDEXT | PHYUTMI_OTGDISABLE;
++	usb_wr(phy, PHY_UTMI, reg);
++
++	usb_wr(phy, PHY_LINKPORT, usb_rd(phy, PHY_LINKPORT) | LINKPORT_OVCR_U3_SEL | LINKPORT_OVCR_U2_SEL);
++
++	reg = usb_rd(phy, PHY_HSPHYCTRL);
++	usb_wr(phy, PHY_HSPHYCTRL, reg | HSPHYCTRL_PHYSWRST);
++	delay(20);
++	usb_wr(phy, PHY_HSPHYCTRL, usb_rd(phy, PHY_HSPHYCTRL) & ~HSPHYCTRL_PHYSWRST);
++
++	/* exynos7870_tunes_utmi_postinit: PHYPARAM0 tuning fields (whole low 26 bits). */
++	reg = usb_rd(phy, PHY_PARAM0) & ~0x03ffffffu;
++	reg |= (3u << 22) | (1u << 20) | (2u << 18) | (0u << 17) | (0u << 15) | (0u << 13) |
++	    (3u << 9) | (5u << 6) | (2u << 3) | (3u << 0);
++	usb_wr(phy, PHY_PARAM0, reg);
++	printf("SWEET USB: PHY up: ref %llu Hz fsel %u CLKRST 0x%08x UTMI 0x%08x HSPHYCTRL 0x%08x\n",
++	    ref, fsel, usb_rd(phy, PHY_CLKRST), usb_rd(phy, PHY_UTMI), usb_rd(phy, PHY_HSPHYCTRL));
++	return 0;
++}
++
+ void
+ sweet_usb_probe(void)
+ {
+ 	int enabled = 1;
+-	uint32_t gdscr, cbcr[sizeof(usb_cbcr) / sizeof(usb_cbcr[0])];
+-	bool clocks_on = true;
+ 
+-	/* sweetusb=0 off, 1 (default) report state only, 2 also start the USB device */
++	/* sweetusb=0 off, 1 (default) bring up USB and the ECM interface */
+ 	PE_parse_boot_argn("sweetusb", &enabled, sizeof(enabled));
+ 	if (!enabled) {
+ 		return;
+ 	}
+-	vm_offset_t gcc = ml_io_map(GCC_PA, GCC_SIZE);
+-	if (gcc == 0) {
+-		printf("SWEET USB: GCC map failed\n");
+-		return;
+-	}
+-	gdscr = usb_rd(gcc, GCC_USB30_PRIM_GDSCR);
+-	printf("SWEET USB: GDSC usb30_prim 0x%08x (%s)\n", gdscr, (gdscr & (1u << 31)) ? "on" : "off");
+-	for (unsigned i = 0; i < sizeof(usb_cbcr) / sizeof(usb_cbcr[0]); i++) {
+-		cbcr[i] = usb_rd(gcc, usb_cbcr[i].off);
+-		printf("SWEET USB: clk %-12s CBCR 0x%08x (%s)\n", usb_cbcr[i].name, cbcr[i],
+-		    (cbcr[i] & CBCR_CLK_OFF) ? "off" : "on");
+-	}
+-	/* DWC3 registers need the GDSC, the master clock and the config-NoC path. */
+-	clocks_on = (gdscr & (1u << 31)) && !(cbcr[0] & CBCR_CLK_OFF) && !(cbcr[3] & CBCR_CLK_OFF);
+-	if (!clocks_on) {
+-		printf("SWEET USB: controller unpowered or unclocked; DWC3 not read\n");
++	if (usb_power_and_phy()) {
++		printf("SWEET USB: not started\n");
+ 		return;
+ 	}
+ 	vm_offset_t dwc = ml_io_map(DWC3_PA, DWC3_SIZE);
+@@ -108,40 +263,28 @@
+ 		printf("SWEET USB: DWC3 map failed\n");
+ 		return;
+ 	}
+-	printf("SWEET USB: DWC3 GSNPSID 0x%08x GCTL 0x%08x GSTS 0x%08x GUSB2PHYCFG 0x%08x\n",
+-	    usb_rd(dwc, 0xc120), usb_rd(dwc, 0xc110), usb_rd(dwc, 0xc118), usb_rd(dwc, 0xc200));
+-	printf("SWEET USB: DWC3 DCFG 0x%08x DCTL 0x%08x DEVTEN 0x%08x DSTS 0x%08x DALEPENA 0x%08x\n",
+-	    usb_rd(dwc, 0xc700), usb_rd(dwc, 0xc704), usb_rd(dwc, 0xc708), usb_rd(dwc, 0xc70c),
+-	    usb_rd(dwc, 0xc720));
+-	printf("SWEET USB: DWC3 GEVNTADR 0x%08x%08x GEVNTSIZ 0x%08x GEVNTCOUNT 0x%08x GHWPARAMS0 0x%08x\n",
+-	    usb_rd(dwc, 0xc404), usb_rd(dwc, 0xc400), usb_rd(dwc, 0xc408), usb_rd(dwc, 0xc40c),
+-	    usb_rd(dwc, 0xc140));
+-	if (enabled >= 2) {
+-		sweet_usb_gadget_start(dwc);
+-	}
+-	if (cbcr[5] & CBCR_CLK_OFF) {
+-		printf("SWEET USB: ahb2phy clock off; QUSB2 PHY not read\n");
++	uint32_t id = usb_rd(dwc, GSNPSID);
++	printf("SWEET USB: DWC3 GSNPSID 0x%08x GCTL 0x%08x GUSB2PHYCFG 0x%08x GHWPARAMS0 0x%08x\n",
++	    id, usb_rd(dwc, GCTL_REG), usb_rd(dwc, GUSB2PHYCFG), usb_rd(dwc, 0xc140));
++	if ((id & 0xffff0000u) != 0x55330000u) {
++		printf("SWEET USB: not a DWC_usb3 core\n");
+ 		return;
+ 	}
+-	vm_offset_t phy = ml_io_map(QUSB2_PA, QUSB2_SIZE);
+-	if (phy == 0) {
+-		return;
+-	}
+-	/* DT qcom,qusb-phy-reg-offset order (Linux phy-msm-qusb-v2.c): PORT_TUNE1 0x240,
+-	 * PLL_COMMON_STATUS_ONE 0x1a0, PWR_CTRL1 0x210, INTR_CTRL 0x230,
+-	 * PLL_CORE_INPUT_OVERRIDE 0x0a8, TEST1 0x254. */
+-	printf("SWEET USB: QUSB2 PLL_STATUS 0x%08x PWR_CTRL1 0x%08x PORT_TUNE1 0x%08x TEST1 0x%08x\n",
+-	    usb_rd(phy, 0x1a0), usb_rd(phy, 0x210), usb_rd(phy, 0x240), usb_rd(phy, 0x254));
++	/* 6. Device mode, no clock scale-down, PHY suspend off during bring-up. */
++	usb_wr(dwc, GUSB2PHYCFG, usb_rd(dwc, GUSB2PHYCFG) & ~GUSB2PHYCFG_SUSPHY);
++	usb_wr(dwc, GCTL_REG, (usb_rd(dwc, GCTL_REG) & ~(GCTL_PRTCAPDIR_MASK | GCTL_SCALEDOWN_MASK)) |
++	    GCTL_PRTCAPDIR_DEVICE);
++	sweet_usb_gadget_start(dwc);
+ }
+ 
+ /*
+  * Step 2: USB device mode with only the default control endpoint, enough
+- * for the host to enumerate the phone (boot-arg sweetusb=2). ABL leaves
+- * the DWC3 powered, clocked, in device mode and halted, with the PHY set
+- * up, so only the device controller is restarted: soft reset, an event
+- * buffer in our memory, endpoint 0, run. Events are polled from a kernel
+- * thread (no interrupt), like the UFS driver. DMA is not cache coherent
+- * (DT qcom,gsi-disable-io-coherency): buffers are cleaned/invalidated.
++ * for the host to enumerate the phone. sweet_usb_probe() has powered,
++ * clocked and set up the PHY and put the DWC3 in device mode; the device
++ * controller is then restarted: soft reset, an event buffer in our memory,
++ * endpoint 0, run. Events are polled from a kernel thread (no interrupt),
++ * like the eMMC driver. DMA is not cache coherent: buffers are
++ * cleaned/invalidated.
+  * Register layout and the control-transfer state machine follow the
+  * Synopsys DWC3 databook as used by Linux drivers/usb/dwc3 (gadget.c,
+  * ep0.c).
+@@ -161,19 +304,6 @@
+ #define DEPCMDPAR0(n)   (0xc808 + 0x10 * (n))
+ #define DEPCMD(n)       (0xc80c + 0x10 * (n))
+ 
+-/*
+- * Qualcomm wrapper registers ("QSCRATCH", core base + 0xf8800). The
+- * controller only connects (pull-up on D+) while it sees a valid VBUS
+- * session; Linux dwc3-qcom forces that in software when the charger
+- * reports a cable (dwc3_qcom_vbus_override_enable).
+- */
+-#define QSCRATCH_PA             0x0a6f8800
+-#define QSCRATCH_HS_PHY_CTRL    0x10
+-#define   UTMI_OTG_VBUS_VALID   (1u << 20)
+-#define   SW_SESSVLD_SEL        (1u << 28)
+-#define QSCRATCH_SS_PHY_CTRL    0x30
+-#define   LANE0_PWR_PRESENT     (1u << 24)
+-
+ #define DCTL_RUN_STOP   (1u << 31)
+ #define DCTL_CSFTRST    (1u << 30)
+ #define DSTS_DEVCTRLHLT (1u << 22)
+@@ -802,7 +932,7 @@
+ 
+ /*
+  * Live console log over USB Ethernet: every 100 ms the new bytes of the
+- * console ring (bsd/dev/sweet_ufs.c) go as UDP datagrams to
++ * console ring (bsd/dev/sweet_mmc.c) go as UDP datagrams to
+  * 192.168.7.1:5140 (on the PC: nc -ukl 5140). Starts with the last 64 KiB
+  * so the boot is included. Nothing here may print (it would feed itself).
+  * Boot-arg sweetusblog=0 disables it.
+@@ -866,7 +996,7 @@
+ 	ud.dma_pa = ptoa_64(pn);
+ 	ud_if_create();
+ 
+-	/* Device controller soft reset (PHY and global setup stay as ABL left them). */
++	/* Device controller soft reset (PHY and global setup done by sweet_usb_probe). */
+ 	dwc_wr(DCTL, DCTL_CSFTRST);
+ 	int i;
+ 	for (i = 0; i < 500 && (dwc_rd(DCTL) & DCTL_CSFTRST); i++) {
+@@ -902,18 +1032,6 @@
+ 	dwc_wr(DALEPENA, 0x3);
+ 	ud_start_setup();
+ 
+-	vm_offset_t qs = ml_io_map(QSCRATCH_PA, 0x100);
+-	if (qs != 0) {
+-		uint32_t hs = usb_rd(qs, QSCRATCH_HS_PHY_CTRL), ss = usb_rd(qs, QSCRATCH_SS_PHY_CTRL);
+-		printf("SWEET USB: QSCRATCH HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x GENERAL_CFG 0x%08x\n",
+-		    hs, ss, usb_rd(qs, 0x08));
+-		*(volatile uint32_t *)(qs + QSCRATCH_HS_PHY_CTRL) = hs | UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL;
+-		*(volatile uint32_t *)(qs + QSCRATCH_SS_PHY_CTRL) = ss | LANE0_PWR_PRESENT;
+-		__asm__ volatile ("dsb sy" ::: "memory");
+-		printf("SWEET USB: VBUS override on: HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x\n",
+-		    usb_rd(qs, QSCRATCH_HS_PHY_CTRL), usb_rd(qs, QSCRATCH_SS_PHY_CTRL));
+-	}
+-
+ 	dwc_wr(DCTL, dwc_rd(DCTL) | DCTL_RUN_STOP);
+ 	for (i = 0; i < 500 && (dwc_rd(DSTS) & DSTS_DEVCTRLHLT); i++) {
+ 		delay(1000);

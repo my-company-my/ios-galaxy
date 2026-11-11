@@ -1,0 +1,802 @@
+--- a/makedefs/MakeInc.def
++++ b/makedefs/MakeInc.def
+@@ -61,7 +61,7 @@
+ MACHINE_FLAGS_ARM64_T6000 = -DARM64_BOARD_CONFIG_T6000 		-mcpu=apple-a14
+ MACHINE_FLAGS_ARM64_VMAPPLE = -DARM64_BOARD_CONFIG_VMAPPLE              -march=armv8.5a
+ MACHINE_FLAGS_ARM64_BCM2837 = -DARM64_BOARD_CONFIG_BCM2837
+-MACHINE_FLAGS_ARM64_SWEET = -DARM64_BOARD_CONFIG_SWEET                -march=armv8.2-a+crypto
++MACHINE_FLAGS_ARM64_SWEET = -DARM64_BOARD_CONFIG_SWEET                -march=armv8-a+crc+crypto -mtune=cortex-a53 -mfix-cortex-a53-835769
+ 
+ 
+ #
+@@ -337,6 +337,15 @@
+ ARM64_LINK_ADDR    =0xfffffe0007004000
+ endif
+ 
++# SWEET (Galaxy J7 Neo, Cortex-A53): 4K pages only, so the kernel has a
++# 39-bit (T1SZ 25) address space. The large-memory layout starts at -2TB,
++# outside it: use the iOS-style layout (kernel at -64GB) instead.
++ifeq ($(CURRENT_MACHINE_CONFIG),SWEET)
++LARGE_MEMORY_DEFINE=-UARM_LARGE_MEMORY
++ARM64_PLKSEG_ADDR  =0xfffffff004004000
++ARM64_LINK_ADDR    =0xfffffff007004000
++endif
++
+ 
+ CFLAGS_ARM64	= -Darm64 -DARM64 -D__ARM64__ -DLP64 -DPAGE_SIZE_FIXED -DVM_KERNEL_LINK_ADDRESS=$(ARM64_LINK_ADDR) \
+ 			$(LARGE_MEMORY_DEFINE) -momit-leaf-frame-pointer -fno-strict-aliasing -D__API__=v4 -mkernel
+--- a/pexpert/pexpert/arm64/SWEET.h
++++ b/pexpert/pexpert/arm64/SWEET.h
+@@ -1,12 +1,21 @@
+ /*
+- * Board config for the Redmi Note 10 Pro ("sweet", Qualcomm SM7150 /
+- * Snapdragon 732G): Kryo 470 = Cortex-A76 + Cortex-A55, ARMv8.2, no PAC.
++ * Board config for the Samsung Galaxy J7 Neo (SM-J701M, "j7velte"):
++ * Exynos 7870, 8 x Cortex-A53 (two clusters of four, MPIDR 0x000-0x003 and
++ * 0x100-0x103), ARMv8.0-A + CRC + Crypto, no PAC, no PAN, no LSE atomics.
++ *
++ * The port keeps the internal name SWEET (it started on the Redmi Note 10
++ * Pro "sweet"); ARM64_BOARD_CONFIG_SWEET now always means this phone.
+  *
+  * Generic ARM like BCM2837 (no APPLE_ARM64_ARCH_FAMILY: none of Apple's
+- * implementation-defined system registers exist), 16K pages and GICv3 like
+- * VMAPPLE. Unlike VMAPPLE the GIC has two security states (GICD_TYPER
+- * SecurityExtn=1): Group 0 belongs to TrustZone, so every interrupt,
+- * including the timer, is a Group 1 IRQ taken through sleh_irq().
++ * implementation-defined system registers exist). Differences that matter:
++ *   - 4K translation granule. Cortex-A53 implements only the 4K and 64K
++ *     granules (ID_AA64MMFR0_EL1.TGran16 = 0, A53 TRM), so __ARM_16K_PG__
++ *     is NOT defined. The shim checks TGran4 before it jumps to the kernel.
++ *   - GIC-400 (GICv2, memory-mapped CPU interface, no ICC_* system
++ *     registers). The kernel runs in the non-secure world: everything it
++ *     owns is Group 1 and arrives as an IRQ through sleh_irq().
++ *   - Samsung's S-BOOT never programs CNTFRQ_EL0 (reads 0). The timebase
++ *     (26 MHz) comes only from the ADT /cpus timebase-frequency.
+  */
+ 
+ #ifndef _PEXPERT_ARM64_SWEET_H
+@@ -16,12 +25,11 @@
+ #define NO_ECORE                  1
+ 
+ #define SWEET                     1
++#define SWEET_J7NEO               1
+ 
+ /*
+- * All eight cores (six A55 + two A76) as one homogeneous SMP cluster:
+- * cpus=N is clamped here. Same ISA level (ARMv8.2), 64-byte lines, PSCI
+- * CPU_ON; the scheduler does not know the A76s are faster (no AMP/P-E
+- * clusters yet).
++ * All eight Cortex-A53 cores as one homogeneous SMP cluster: cpus=N is
++ * clamped here. PSCI 0.2 CPU_ON through SMC (Samsung EL3 monitor).
+  */
+ #define SWEET_SMP_MAX_CPUS         8
+ 
+@@ -33,51 +41,60 @@
+ #define __ARM_DEBUG__             7
+ #define __ARM_ENABLE_SWAP__       1
+ #define __ARM_V8_CRYPTO_EXTENSIONS__ 1
+-#define __ARM_PAN_AVAILABLE__     1
+-#define __ARM_16K_PG__            1
++/* No __ARM_PAN_AVAILABLE__: PAN is ARMv8.1; "msr PAN, #1" is UNDEFINED on A53. */
++/* No __ARM_16K_PG__: see above, 4K pages. */
+ 
+-#define HAS_GIC_V3                1
++#define SWEET_GICV2               1
+ 
+ #ifndef ASSEMBLER
+ #define PLATFORM_PANIC_LOG_DISABLED
+ #endif /* ! ASSEMBLER */
+ 
+ /*
+- * Qualcomm numbers the architected timer PPIs 1/2/3/0 (secure phys, phys,
+- * virt, hyp) instead of the usual 13/14/11/10: the virtual timer XNU uses
+- * (CNTV) is INTID 16 + 3 = 19.
++ * Standard ARM PPI numbering on Exynos: secure phys / phys / virt / hyp =
++ * PPI 13/14/11/10. XNU uses the virtual timer (CNTV): INTID 16 + 11 = 27.
+  */
+-#define SWEET_VTIMER_INTID        19
++#define SWEET_VTIMER_INTID        27
+ #define SWEET_IPI_SGI             1       // SGI used for cross-CPU signals
+ 
+ #define GIC_SPURIOUS_IRQ          1023    // IRQ no. for GIC spurious interrupt
+ 
+-#define GICR_PE_SIZE              0x20000 // Size of each redistributor region
+-
+-/* GICv3 register definitions; see GICv3 spec (Arm IHI 0069G) */
+-#define GICD_CTLR                 0x0
+-
+-/* Non-secure view of GICD_CTLR (DS=0) */
+-#define GICD_CTLR_ENABLEGRP1      0x1
+-#define GICD_CTLR_ENABLEGRP1A     0x2
+-#define GICD_CTLR_ARE_NS          0x10
+-#define GICD_CTLR_RWP             0x80000000
+-
+-#define GICR_TYPER                              0x08
+-#define GICR_WAKER                              0x14
+-#define GICR_IGROUPR0                           0x10080
+-#define GICR_ISENABLER0                         0x10100
+-#define GICR_IPRIORITYR0                        0x10400
++/* GICv2 distributor (GIC-400, Arm IHI 0048B) */
++#define GICD_CTLR                 0x000
++#define GICD_TYPER                0x004
++#define GICD_ISENABLER            0x100
++#define GICD_ICENABLER            0x180
++#define GICD_ICPENDR              0x280
++#define GICD_ICACTIVER            0x380
++#define GICD_IPRIORITYR           0x400
++#define GICD_ITARGETSR            0x800
++#define GICD_ICFGR                0xc00
++#define GICD_SGIR                 0xf00
++
++#define GICD_CTLR_ENABLE          0x1     // non-secure view: EnableGrp1
++#define GICD_SGIR_TARGET_SHIFT    16
++
++/* GICv2 CPU interface */
++#define GICC_CTLR                 0x000
++#define GICC_PMR                  0x004
++#define GICC_BPR                  0x008
++#define GICC_IAR                  0x00c
++#define GICC_EOIR                 0x010
+ 
+-#define GICR_TYPER_AFFINITY_VALUE_SHIFT         32
+-#define GICR_TYPER_LAST                         0x10
++#define GICC_CTLR_ENABLE          0x1     // non-secure view: EnableGrp1
++#define GICC_IAR_INTID_MASK       0x3ff
+ 
+-#define GICR_WAKER_PROCESSORSLEEP               0x2
+-#define GICR_WAKER_CHILDRENASLEEP               0x4
+-
+-#define ICC_CTLR_EOIMODE                        0x2
+-
+-#define ICC_SRE_SRE                             0x1
+-/* End of GICv3 register definitions */
++/*
++ * Boot framebuffer that S-BOOT leaves scanning out (simple-framebuffer of
++ * the postmarketOS exynos7870-j7velte DTS, tested there on SM-J701M; the
++ * same address in mainline's j7xelte DTS): 720x1280, a8r8g8b8, stride 2880. Early boot maps the
++ * 2 MB blocks that contain it as Device-GRE memory: what else lies in those
++ * blocks is unknown, so nothing may be speculatively read from them.
++ */
++#define SWEET_FB_PHYS             0x67000000
++#define SWEET_FB_WIDTH            720
++#define SWEET_FB_HEIGHT           1280
++#define SWEET_FB_STRIDE           2880
++#define SWEET_FB_BYTES            (SWEET_FB_STRIDE * SWEET_FB_HEIGHT)
+ 
+ #endif /* ! _PEXPERT_ARM64_SWEET_H */
+--- a/pexpert/pexpert/arm/protos.h
++++ b/pexpert/pexpert/arm/protos.h
+@@ -38,6 +38,10 @@
+ void pe_init_fiq(void);
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ extern uint32_t sweet_vtimer_intid;
++/* pexpert/arm/pe_fiq.c, GIC-400 (Galaxy J7 Neo) */
++uint32_t sweet_gic_ack(void);
++void sweet_gic_eoi(uint32_t iar);
++void sweet_gic_send_sgi(unsigned int cpu, uint32_t phys_id);
+ #endif
+ 
+ #ifdef PRIVATE
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -222,6 +222,184 @@
+ 	__builtin_arm_isb(ISB_SY);
+ #endif /* SWEET */
+ }
++#elif defined(SWEET_GICV2)
++/*
++ * Galaxy J7 Neo: GIC-400 (GICv2). The kernel runs non-secure, so every
++ * interrupt it owns is Group 1 and arrives as an IRQ (sleh_irq). The
++ * distributor is set up once by the boot CPU; SGIs/PPIs and the CPU
++ * interface are banked and set up by each CPU here (PE_init_cpu).
++ *
++ * ADT /arm-io/gic reg = <GICD offset, size, GICC offset, size> relative to
++ * the arm-io base, the same layout the GICv3 code reads.
++ */
++SECURITY_READ_ONLY_LATE(uint32_t) sweet_vtimer_intid = SWEET_VTIMER_INTID;
++
++static vm_offset_t gicd_base;
++static vm_offset_t gicc_base;
++/* GIC CPU interface mask (GICD_ITARGETSR byte) of each logical CPU. */
++static uint8_t gic_cpu_mask[MAX_CPUS];
++
++static inline uint32_t
++gicd_read32(uint32_t off)
++{
++	return *(volatile uint32_t *)(gicd_base + off);
++}
++
++static inline void
++gicd_write32(uint32_t off, uint32_t value)
++{
++	*(volatile uint32_t *)(gicd_base + off) = value;
++}
++
++static inline uint32_t
++gicc_read32(uint32_t off)
++{
++	return *(volatile uint32_t *)(gicc_base + off);
++}
++
++static inline void
++gicc_write32(uint32_t off, uint32_t value)
++{
++	*(volatile uint32_t *)(gicc_base + off) = value;
++}
++
++/*
++ * The CPU interface number is not architecturally tied to MPIDR: read it
++ * from the banked GICD_ITARGETSR0..7, which return the reading CPU's mask.
++ */
++static uint8_t
++gic_read_own_mask(void)
++{
++	for (uint32_t off = 0; off < 32; off += 4) {
++		uint32_t v = gicd_read32(GICD_ITARGETSR + off);
++		v |= v >> 16;
++		v |= v >> 8;
++		if (v & 0xff) {
++			return (uint8_t)(v & 0xff);
++		}
++	}
++	return 0;
++}
++
++static void
++gic_dist_init(void)
++{
++	uint32_t lines = ((gicd_read32(GICD_TYPER) & 0x1f) + 1) * 32;
++	uint8_t me = gic_read_own_mask();
++
++	/*
++	 * S-BOOT leaves the distributor enabled with Android's routing.
++	 * Start clean: every SPI disabled, not pending, not active, lowest
++	 * useful priority, level-triggered, routed to the boot CPU. Drivers
++	 * enable what they use (all of them poll today).
++	 */
++	gicd_write32(GICD_CTLR, 0);
++	for (uint32_t i = 32; i < lines; i += 32) {
++		gicd_write32(GICD_ICENABLER + i / 8, 0xffffffff);
++		gicd_write32(GICD_ICPENDR + i / 8, 0xffffffff);
++		gicd_write32(GICD_ICACTIVER + i / 8, 0xffffffff);
++	}
++	for (uint32_t i = 32; i < lines; i += 4) {
++		gicd_write32(GICD_IPRIORITYR + i, 0xa0a0a0a0);
++		gicd_write32(GICD_ITARGETSR + i, 0x01010101u * me);
++	}
++	for (uint32_t i = 32; i < lines; i += 16) {
++		gicd_write32(GICD_ICFGR + i / 4, 0);
++	}
++	gicd_write32(GICD_CTLR, GICD_CTLR_ENABLE);
++	kprintf("SWEET GIC: GIC-400 %u lines, boot CPU interface mask 0x%x, vtimer INTID %u\n",
++	    lines, me, sweet_vtimer_intid);
++}
++
++void
++pe_init_fiq()
++{
++	int error;
++	DTEntry entry;
++
++	if (!gicd_base) {
++		void const *prop;
++		unsigned int prop_size;
++
++		error = SecureDTLookupEntry(NULL, "/arm-io/gic", &entry);
++		if (error != kSuccess) {
++			panic("%s: cannot find GIC node in DT", __func__);
++		}
++		error = SecureDTGetProperty(entry, "reg", &prop, &prop_size);
++		if (error != kSuccess || prop_size < 4 * sizeof(uint64_t)) {
++			panic("%s: GIC reg must be <GICD off, size, GICC off, size>", __func__);
++		}
++		void const *timer_prop;
++		unsigned int timer_size;
++		if (SecureDTGetProperty(entry, "virtual-timer-intid", &timer_prop, &timer_size) == kSuccess) {
++			uint32_t intid = timer_size == sizeof(uint32_t) ? *(const uint32_t *)timer_prop : 0;
++			if (intid < 16 || intid >= 32) {
++				panic("%s: virtual timer INTID %u is not a PPI", __func__, intid);
++			}
++			sweet_vtimer_intid = intid;
++		}
++
++		vm_offset_t soc_base_phys = pe_arm_get_soc_base_phys();
++		uint64_t const *reg = (uint64_t const *)prop;
++		gicd_base = ml_io_map(soc_base_phys + reg[0], reg[1]);
++		gicc_base = ml_io_map(soc_base_phys + reg[2], reg[3]);
++		if (!gicd_base || !gicc_base) {
++			panic("%s: cannot map the GIC", __func__);
++		}
++		gic_dist_init();
++	}
++
++	unsigned int cpu = ml_get_cpu_number_local();
++	uint8_t mask = gic_read_own_mask();
++	if (cpu < MAX_CPUS) {
++		gic_cpu_mask[cpu] = mask;
++		__builtin_arm_dmb(DMB_ISH);
++	}
++
++	/* Banked SGIs and PPIs: only the IPI SGI and the virtual timer. */
++	gicd_write32(GICD_ICENABLER, 0xffffffff);
++	gicd_write32(GICD_ICPENDR, 0xffffffff);
++	for (uint32_t i = 0; i < 32; i += 4) {
++		gicd_write32(GICD_IPRIORITYR + i, 0xa0a0a0a0);
++	}
++	gicd_write32(GICD_ISENABLER, (1U << sweet_vtimer_intid) | (1U << SWEET_IPI_SGI));
++
++	/* Non-secure CPU interface: unmask all priorities, EOIR also deactivates. */
++	gicc_write32(GICC_PMR, 0xf0);
++	gicc_write32(GICC_BPR, 0);
++	gicc_write32(GICC_CTLR, GICC_CTLR_ENABLE);
++	__builtin_arm_isb(ISB_SY);
++	kprintf("SWEET GIC: cpu %u mpidr 0x%llx interface mask 0x%x\n", cpu,
++	    __builtin_arm_rsr64("MPIDR_EL1") & 0xffffULL, mask);
++}
++
++uint32_t
++sweet_gic_ack(void)
++{
++	return gicc_read32(GICC_IAR);
++}
++
++void
++sweet_gic_eoi(uint32_t iar)
++{
++	gicc_write32(GICC_EOIR, iar);
++}
++
++/*
++ * SGI to one logical CPU. Before that CPU has run pe_init_fiq its mask is
++ * unknown; Exynos 7870 numbers its interfaces cluster * 4 + core, which is
++ * used only then.
++ */
++void
++sweet_gic_send_sgi(unsigned int cpu, uint32_t phys_id)
++{
++	uint8_t mask = cpu < MAX_CPUS ? gic_cpu_mask[cpu] : 0;
++	if (mask == 0) {
++		mask = (uint8_t)(1u << ((((phys_id >> 8) & 0xff) * 4 + (phys_id & 0xff)) & 7));
++	}
++	__builtin_arm_dsb(DSB_ISHST);
++	gicd_write32(GICD_SGIR, ((uint32_t)mask << GICD_SGIR_TARGET_SHIFT) | SWEET_IPI_SGI);
++}
+ #else
+ void
+ pe_init_fiq()
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -952,6 +952,17 @@
+ 		}
+ 	}
+ 
++#if defined(SWEET)
++	/* Cortex-A53 has no ARMv8.1 atomics: emulate them for the iOS userland. */
++	{
++		extern bool sweet_lse_emulate(arm_saved_state_t *state, uint32_t instr);
++		if (PSR64_IS_USER64(get_saved_state_cpsr(state)) && sweet_lse_emulate(state, instr)) {
++			add_saved_state_pc(state, 4);
++			return;
++		}
++	}
++#endif
++
+ 	/*
+ 	 * Check for GDB breakpoint via illegal opcode.
+ 	 */
+@@ -1858,13 +1869,15 @@
+ 
+ #if defined(SWEET)
+ 	/*
+-	 * sweet: TrustZone owns GIC Group 0, so the timer and IPIs that other
+-	 * ARM64 targets take as FIQs arrive here as Group 1 IRQs.
++	 * Galaxy J7 Neo, GIC-400: the kernel is non-secure, so the timer and
++	 * IPIs that other ARM64 targets take as FIQs arrive here as Group 1
++	 * IRQs through the memory-mapped CPU interface. GICC_EOIR must get the
++	 * whole IAR value back (bits 12:10 = source CPU of an SGI).
+ 	 */
+-	uint64_t iar = __builtin_arm_rsr64("ICC_IAR1_EL1");
+-	uint32_t intid = (uint32_t)(iar & 0xFFFFFF);
++	uint32_t iar = sweet_gic_ack();
++	uint32_t intid = iar & GICC_IAR_INTID_MASK;
+ 
+-	if (intid >= 1020 && intid <= 1023) {
++	if (intid >= 1020) {
+ 		return; /* spurious */
+ 	}
+ 	if (intid == sweet_vtimer_intid) {
+@@ -1873,12 +1886,12 @@
+ 		INTERRUPT_MASKED_DEBUG_START(rtclock_intr, DBG_INTR_TYPE_TIMER);
+ 		rtclock_intr(TRUE);
+ 		INTERRUPT_MASKED_DEBUG_END();
+-		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
++		sweet_gic_eoi(iar);
+ 	} else if (intid < 16) {
+ 		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_IPI);
+ 		/* Ack before handling so an IPI raised meanwhile is not lost */
+-		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
+-		__builtin_arm_isb(ISB_SY);
++		sweet_gic_eoi(iar);
++		__builtin_arm_dsb(DSB_SY);
+ 		cpu_signal_handler();
+ 	} else {
+ 		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_OTHER);
+@@ -1888,7 +1901,7 @@
+ 			    cdp->interrupt_nub,
+ 			    intid);
+ 		}
+-		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
++		sweet_gic_eoi(iar);
+ 	}
+ 	__builtin_arm_isb(ISB_SY);
+ #else
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -306,11 +306,13 @@
+ 	mov		x1, #3
+ 	msr		CNTHCTL_EL2, x1
+ 	msr		CNTVOFF_EL2, xzr
++#if !defined(SWEET_GICV2)
+ 	/* Permit ICC_SRE_EL1 and GIC CPU interface system-register access. */
+ 	mrs		x1, ICC_SRE_EL2
+ 	orr		x1, x1, #1
+ 	orr		x1, x1, #8
+ 	msr		ICC_SRE_EL2, x1
++#endif /* GIC-400 has no system-register interface: ICC_* would be UNDEFINED */
+ 	/* Known Armv8 SCTLR RES1 bits, M/C/I off, little endian. */
+ 	MOV64	x1, 0x30d00800
+ 	msr		SCTLR_EL1, x1
+@@ -514,11 +516,11 @@
+ 	mov		x21, #0
+ 
+ #if defined(SWEET)
+-	/* Stage 0: white 64x32 band, no stack or page tables needed. */
+-	MOV64	x0, (0x9c000000 + 2368 * 4320)
++	/* Stage 0: white 64x32 band at the bottom left, no stack or page tables needed. */
++	MOV64	x0, (SWEET_FB_PHYS + (SWEET_FB_HEIGHT - 32) * SWEET_FB_STRIDE)
+ 	mov		w1, #-1
+ 	mov		x2, #32
+-	mov		x4, #4320
++	mov		x4, #SWEET_FB_STRIDE
+ Lsweet_mark_row:
+ 	mov		x3, #64
+ 	mov		x5, x0
+@@ -679,20 +681,38 @@
+ 	create_bootstrap_mapping x14, x15, x5, x3, x2, x9, x10, x11, x12, x13
+ 
+ #if defined(SWEET)
++#if __ARM_16K_PG__
++#error "SWEET (Galaxy J7 Neo, Cortex-A53) has no 16K translation granule"
++#endif
+ 	/*
+-	 * Splash framebuffer: one 32MB Normal-NC block in the EXISTING V=P
+-	 * L2 table. Both framebuffer and RAM use L1 index 0; another call to
+-	 * create_bootstrap_mapping would replace the RAM L2 table.
+-	 * SWEET uses 16K pages and all bring-up RAM is below 4GB, so the first
+-	 * V=P L2 page is bootstrap_pagetables + 2*PGBYTES.
++	 * Splash framebuffer, V=P, for the early console (sweet_early.c).
++	 * 4K granule: an L1 entry covers 1 GB, so the framebuffer
++	 * (0x67000000, L1 slot 1) and RAM (0x80000000, slot 2) have separate
++	 * L2 tables. Take the next free bootstrap page (x2 = last page the
++	 * mappings above used; the bootstrap area was zeroed) as a new L2
++	 * table with Device-GRE blocks over the framebuffer: nothing else
++	 * in those 2 MB blocks may be speculatively read. Skipped if the L1
++	 * slot is already in use (RAM there), leaving the early console dark.
+ 	 */
+-	MOV64	x10, 0x9c000000
+-	MOV64	x11, (ARM_TTE_TYPE_BLOCK | ARM_TTE_VALID | ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) | ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITECOMB) | ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX)
++	MOV64	x10, (SWEET_FB_PHYS & ~(ARM_TT_L2_SIZE - 1))
++	and		x11, x10, #(ARM_TT_L1_INDEX_MASK)
++	lsr		x11, x11, #(ARM_TT_L1_SHIFT)
++	ldr		x12, [x1, x11, lsl #TTE_SHIFT]
++	cbnz	x12, Lsweet_fb_mapped
++	add		x2, x2, PGBYTES
++	create_l1_table_entry	x10, x1, x2, x11, x12, x13
++	MOV64	x11, (ARM_TTE_TYPE_BLOCK | ARM_TTE_VALID | ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_POSTED_COMBINED_REORDERED) | ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX)
+ 	orr		x11, x11, x10
+ 	and		x12, x10, #(ARM_TT_L2_INDEX_MASK)
+ 	lsr		x12, x12, #(ARM_TT_L2_SHIFT)
+-	add		x13, x25, #(2 * PGBYTES)
+-	str		x11, [x13, x12, lsl #TTE_SHIFT]
++	add		x13, x2, x12, lsl #TTE_SHIFT
++	mov		x12, #((SWEET_FB_PHYS + SWEET_FB_BYTES - (SWEET_FB_PHYS & ~(ARM_TT_L2_SIZE - 1)) + ARM_TT_L2_SIZE - 1) / ARM_TT_L2_SIZE)
++Lsweet_fb_block:
++	str		x11, [x13], #(1 << TTE_SHIFT)
++	add		x11, x11, #(ARM_TT_L2_SIZE)
++	subs	x12, x12, #1
++	b.ne	Lsweet_fb_block
++Lsweet_fb_mapped:
+ #endif
+ 
+ 	/* Ensure TTEs are visible */
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -1828,25 +1828,34 @@
+ #if defined(SWEET)
+ /*
+  * The reserved low-globals/kernel region is excluded from VM allocation.
+- * Use the otherwise empty 32MB block above low globals and below gVirtBase
+- * for a Normal-NC framebuffer alias that survives bootstrap TTBR0 teardown.
++ * MakeInc.def reserves 0xfffffff002000000-0xfffffff004000000 ("32MB range
++ * to allow for large page physical slide") between the low globals and the
++ * kernel, in the same 1 GB L1 slot as the kernel (4K granule). It is empty
++ * (mkpayload.py puts gVirtBase at 0xfffffff006000000): use it for a
++ * Device-GRE alias of the boot framebuffer that survives bootstrap TTBR0
++ * teardown.
+  */
+-#define SWEET_EARLY_FB_VA (VM_MIN_KERNEL_ADDRESS + ARM_TT_L2_SIZE)
++#define SWEET_EARLY_FB_VA (LOW_GLOBAL_BASE_ADDRESS + 0x2000000ULL)
++#define SWEET_EARLY_FB_BLOCK_PA ((uint64_t)SWEET_FB_PHYS & ~(uint64_t)ARM_TT_L2_OFFMASK)
++#define SWEET_EARLY_FB_BLOCKS \
++	(((uint64_t)SWEET_FB_PHYS + SWEET_FB_BYTES - SWEET_EARLY_FB_BLOCK_PA + ARM_TT_L2_SIZE - 1) / ARM_TT_L2_SIZE)
+ 
+ static void
+ sweet_early_map_final(void)
+ {
+ 	const vm_map_address_t va = SWEET_EARLY_FB_VA;
+-	assert(va + ARM_TT_L2_SIZE <= gVirtBase);
++	assert(va + SWEET_EARLY_FB_BLOCKS * ARM_TT_L2_SIZE <= gVirtBase);
++	assert(SWEET_EARLY_FB_BLOCKS * ARM_TT_L2_SIZE <= 0x2000000ULL);
+ 	tt_entry_t l1 = cpu_tte[(va & ARM_TT_L1_INDEX_MASK) >> ARM_TT_L1_SHIFT];
+ 	assert((l1 & (ARM_TTE_VALID | ARM_TTE_TYPE_MASK)) == (ARM_TTE_VALID | ARM_TTE_TYPE_TABLE));
+ 	tt_entry_t *l2 = (tt_entry_t *)phystokv(l1 & ARM_TTE_TABLE_MASK);
+ 	tt_entry_t *slot = &l2[(va & ARM_TT_L2_INDEX_MASK) >> ARM_TT_L2_SHIFT];
+-	assert(*slot == ARM_TTE_EMPTY);
+-	*slot = 0x9c000000ULL | ARM_TTE_VALID | ARM_TTE_TYPE_BLOCK |
+-	    ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) |
+-	    ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITECOMB) |
+-	    ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX;
++	for (uint64_t i = 0; i < SWEET_EARLY_FB_BLOCKS; i++) {
++		assert(slot[i] == ARM_TTE_EMPTY);
++		slot[i] = (SWEET_EARLY_FB_BLOCK_PA + i * ARM_TT_L2_SIZE) | ARM_TTE_VALID | ARM_TTE_TYPE_BLOCK |
++		    ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_POSTED_COMBINED_REORDERED) |
++		    ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX;
++	}
+ 	__asm__ volatile("dsb ishst" ::: "memory");
+ }
+ #endif
+@@ -2190,7 +2199,7 @@
+ 
+ #if defined(SWEET)
+ 	/* The final TTBR1 is live; leave the outgoing VA=PA framebuffer alias. */
+-	sweet_early_relocate(SWEET_EARLY_FB_VA);
++	sweet_early_relocate(SWEET_EARLY_FB_VA + ((uint64_t)SWEET_FB_PHYS & ARM_TT_L2_OFFMASK));
+ #endif
+ 	set_mmu_ttb(invalid_ttep & TTBR_BADDR_MASK);
+ 
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -1,7 +1,7 @@
+ /*
+- * Redmi Note 10 Pro bootstrap console. No allocation, locks, ADT parsing or
++ * Galaxy J7 Neo bootstrap console. No allocation, locks, ADT parsing or
+  * per-CPU state: panic() can reach this before a current thread exists.
+- * start.s maps the splash framebuffer VA=PA as Normal Non-Cacheable memory.
++ * start.s maps the splash framebuffer VA=PA as Device-GRE memory.
+  * arm_vm_init installs a reserved kernel VA alias before removing TTBR0;
+  * retain this console until the normal framebuffer serial console is ready.
+  */
+@@ -11,11 +11,12 @@
+ #include <stdint.h>
+ #include <kern/misc_protos.h>
+ 
+-static volatile uint32_t *early_fb = (volatile uint32_t *)(uintptr_t)0x9c000000;
++static volatile uint32_t *early_fb = (volatile uint32_t *)(uintptr_t)SWEET_FB_PHYS;
+ #define EARLY_FB early_fb
+-#define EARLY_WIDTH 1080u
+-#define EARLY_HEIGHT 2400u
+-#define EARLY_STRIDE (4320u / 4)
++#define EARLY_WIDTH ((unsigned int)SWEET_FB_WIDTH)
++#define EARLY_HEIGHT ((unsigned int)SWEET_FB_HEIGHT)
++#define EARLY_STRIDE ((unsigned int)SWEET_FB_STRIDE / 4)
++#define EARLY_BAND 32u
+ #define EARLY_SCALE 2u
+ #define EARLY_CELL_W (8u * EARLY_SCALE)
+ #define EARLY_CELL_H (16u * EARLY_SCALE)
+@@ -94,7 +95,8 @@
+ 	}
+ 	uint32_t color = 0xff00ff00u | ((stage & 7u) * 32u << 16);
+ 	for (unsigned int y = EARLY_HEIGHT - 32; y < EARLY_HEIGHT; y++) {
+-		for (unsigned int x = stage * 48; x < (stage + 1) * 48; x++) {
++		/* 21 stages (0-20) x 32 px = 672 px: fits the 720 px panel. */
++		for (unsigned int x = stage * EARLY_BAND; x < (stage + 1) * EARLY_BAND; x++) {
+ 			EARLY_FB[y * EARLY_STRIDE + x] = color;
+ 		}
+ 	}
+--- a/iokit/Kernel/arm/SweetCPU.cpp
++++ b/iokit/Kernel/arm/SweetCPU.cpp
+@@ -1,7 +1,8 @@
+ /*
+- * A55 SMP bring-up for sweet using XNU's legacy IOCPU interface and PSCI.
+- * The architected timer and SGI1 already enter through pe_fiq/sleh_irq.
+- * CPU_OFF, suspend and the A76 cores still require separate platform work.
++ * Cortex-A53 SMP bring-up for the Galaxy J7 Neo (Exynos 7870) using XNU's
++ * legacy IOCPU interface and PSCI CPU_ON through SMC. The architected timer
++ * and SGI1 already enter through pe_fiq/sleh_irq (GIC-400).
++ * CPU_OFF and suspend still require separate platform work.
+  */
+ #include <pexpert/arm64/board_config.h>
+ 
+@@ -17,6 +18,7 @@
+ #include <kern/thread.h>
+ #include <mach/mach_time.h>
+ #include <pexpert/pexpert.h>
++#include <pexpert/arm/protos.h>
+ 
+ extern "C" void sweet_secondary_entry(void);
+ extern "C" boolean_t sweet_cpu_signal_is_enabled(unsigned int cpu);
+@@ -73,16 +75,15 @@
+ 	if (*(const uint32_t *)reg->getBytesNoCopy() != cpu->phys_id) {
+ 		return false;
+ 	}
+-	/* MPIDR Aff1 = core: 0x000-0x500 A55, 0x600/0x700 A76 */
+-	if (cpu->phys_id > 0x700 || (cpu->phys_id & 0xff) != 0 ||
+-	    topology->num_cpus > SWEET_SMP_MAX_CPUS) {
++	/* Exynos 7870: MPIDR Aff1 = cluster (0, 1), Aff0 = core (0-3). */
++	if ((cpu->phys_id & ~0x103u) != 0 || topology->num_cpus > SWEET_SMP_MAX_CPUS) {
+ 		panic("SWEET CPU: invalid topology cpu=%u mpidr=0x%x count=%u",
+ 		    cpu->cpu_id, cpu->phys_id, topology->num_cpus);
+ 	}
+ 	if (!IOCPU::start(provider)) {
+ 		return false;
+ 	}
+-	cpuName = OSSymbol::withCStringNoCopy("Kryo 470");
++	cpuName = OSSymbol::withCStringNoCopy("Cortex-A53");
+ 	if (cpuName == NULL) {
+ 		return false;
+ 	}
+@@ -144,9 +145,13 @@
+ 		}
+ 		IOSleep(1);
+ 	}
+-	/* The supplied ADT has cpu0 as the boot CPU and ascending A55 nodes. */
+-	if (topology->boot_cpu->cpu_id != 0 || topology->boot_cpu->phys_id != 0) {
+-		panic("SWEET CPU: expected boot MPIDR 0 and logical CPU 0");
++	/*
++	 * The shim writes the boot core's MPIDR into the first /cpus node, so
++	 * the boot CPU is always logical CPU 0 whatever core S-BOOT used.
++	 */
++	if (topology->boot_cpu->cpu_id != 0) {
++		panic("SWEET CPU: expected the boot CPU as logical CPU 0 (mpidr 0x%x)",
++		    topology->boot_cpu->phys_id);
+ 	}
+ 	for (unsigned int i = 0; i < topology->num_cpus; i++) {
+ 		SweetCPU *cpu = __atomic_load_n(&sweet_cpus[i], __ATOMIC_ACQUIRE);
+@@ -214,19 +219,8 @@
+ 	if (logical >= topology->num_cpus) {
+ 		panic("SWEET CPU: invalid SGI target %u", logical);
+ 	}
+-	/* Use the TARGET affinity, including Aff1, never the sender's MPIDR. */
+-	uint64_t mpidr = topology->cpus[logical].phys_id;
+-	unsigned int aff0 = mpidr & 0xff;
+-	if (aff0 >= 16) {
+-		panic("SWEET CPU: SGI target requires unsupported range selector");
+-	}
+-	uint64_t sgi = (((mpidr >> 32) & 0xff) << 48) |
+-	    (((mpidr >> 16) & 0xff) << 32) |
+-	    (((mpidr >> 8) & 0xff) << 16) |
+-	    ((uint64_t)SWEET_IPI_SGI << 24) | (1ULL << aff0);
+-	__builtin_arm_dsb(DSB_ISHST);
+-	__builtin_arm_wsr64("ICC_SGI1R_EL1", sgi);
+-	__builtin_arm_isb(ISB_SY);
++	/* GIC-400: target by the CPU interface mask, never the sender's. */
++	sweet_gic_send_sgi(logical, topology->cpus[logical].phys_id);
+ }
+ 
+ kern_return_t
+@@ -234,7 +228,7 @@
+ {
+ 	const ml_topology_cpu_t *cpu = &ml_get_topology_info()->cpus[getCPUNumber()];
+ 	/* cpu_start() passes NULL,NULL: x20/x21 are set by LowResetVectorBase. */
+-	if (start_paddr != 0 || arg_paddr != 0 || cpu->phys_id == 0 ||
++	if (start_paddr != 0 || arg_paddr != 0 || cpu == ml_get_topology_info()->boot_cpu ||
+ 	    __atomic_load_n(&initialized, __ATOMIC_ACQUIRE) != 0) {
+ 		panic("SWEET CPU: cpu=%u unsupported restart", getCPUNumber());
+ 	}
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -955,7 +955,7 @@
+ 	const boolean_t cpumask_boot_arg_present = PE_parse_boot_argn("cpumask", &cpumask_boot_arg, sizeof(cpumask_boot_arg));
+ 
+ #if defined(SWEET)
+-	/* Opt in to SMP: cpus=N (N <= SWEET_SMP_MAX_CPUS; cores 6-7 are the A76s). */
++	/* Opt in to SMP: cpus=N (N <= SWEET_SMP_MAX_CPUS, eight Cortex-A53 cores). */
+ 	if (!cpus_boot_arg_present || cpu_boot_arg == 0) {
+ 		cpu_boot_arg = 1;
+ 	}
+@@ -1088,7 +1088,7 @@
+ #endif
+ 
+ #if defined(SWEET)
+-		/* Aff1 encodes the core on SM7150, not an Apple cluster ID. */
++		/* Exynos 7870: Aff1 is the cluster, Aff0 the core; the ADT gives both. */
+ 		cpu->die_cluster_id = (int)ml_readprop(child, "die-cluster-id", 0);
+ 		cpu->cluster_core_id = (int)ml_readprop(child, "cluster-core-id", cpu->phys_id >> 8);
+ #else
+--- a/osfmk/arm/pmap/pmap.c
++++ b/osfmk/arm/pmap/pmap.c
+@@ -480,7 +480,7 @@
+ _Static_assert((ARM64_MAX_OFFSET_DEVICE_SMALL > ARM64_MIN_MAX_ADDRESS) && (ARM64_MAX_OFFSET_DEVICE_SMALL <= MACH_VM_MAX_ADDRESS),
+     "Small device address space size outside allowable range");
+ 
+-#  ifdef XNU_TARGET_OS_OSX
++#  if defined(XNU_TARGET_OS_OSX) && !defined(SWEET)
+ SECURITY_READ_ONLY_LATE(vm_map_offset_t) arm64_pmap_max_offset_default = MACH_VM_MAX_ADDRESS;
+ #  else
+ SECURITY_READ_ONLY_LATE(vm_map_offset_t) arm64_pmap_max_offset_default = 0x0;
+@@ -11337,6 +11337,15 @@
+ 		panic("pmap_max_64bit_offset illegal option 0x%x", option);
+ 	}
+ 
++#if defined(SWEET)
++	/*
++	 * 4K pages, T0SZ 25: user page tables reach 512 GB, far below the
++	 * macOS MACH_VM_MAX_ADDRESS. Never hand out more than they map.
++	 */
++	if (max_offset_ret > (1ULL << (64 - T0SZ_BOOT))) {
++		max_offset_ret = 1ULL << (64 - T0SZ_BOOT);
++	}
++#endif
+ 	assert(max_offset_ret <= MACH_VM_MAX_ADDRESS);
+ 	assert(max_offset_ret >= min_max_offset);
+ #else
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -38,13 +38,13 @@
+     "   {"
+     "     'IOClass'         = SweetPlatformExpert;"
+     "     'IOProviderClass' = IOPlatformExpertDevice;"
+-    "     'IONameMatch'     = 'xiaomi,sweet';"
++    "     'IONameMatch'     = 'samsung,j7velte';"
+     "     'IOProbeScore'    = 10000:32;"
+     "   },"
+     "   {"
+     "     'IOClass'         = SweetCPU;"
+     "     'IOProviderClass' = IOPlatformDevice;"
+-    "     'IONameMatch'     = 'qcom,kryo470';"
++    "     'IONameMatch'     = 'arm,cortex-a53';"
+     "     'IOProbeScore'    = 10000:32;"
+     "   },"
+     "   {"
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -1,5 +1,5 @@
+ /*
+- * Minimal device-tree platform expert for Redmi Note 10 Pro (sweet).
++ * Minimal device-tree platform expert for the Galaxy J7 Neo (SM-J701M).
+  * Uses XNU's normal platform, power-domain and nub initialization. Hardware
+  * interrupt and power-management services are supplied by separate drivers.
+  */
+@@ -76,7 +76,7 @@
+ 
+ /*
+  * hw.target / hw.product come from IODTPlatformExpert: the first root
+- * "compatible" string and "model" (D22AP / iPhone10,3 in the ADT), which
++ * "compatible" string and "model" (D201AP / iPhone10,4 in the ADT), which
+  * is what the iPhone userland (MobileGestalt) expects.
+  */
+ #endif /* SWEET */
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -701,8 +701,8 @@
+ /*****************************************************************************/
+ 
+ /*
+- * sweet: framebuffer "serial" for boards with no usable UART (the Redmi Note
+- * 10 Pro's debug UART engine runs in SPI mode). kprintf output is drawn onto
++ * sweet: framebuffer "serial" for boards without a usable UART (the Galaxy
++ * J7 Neo's UART needs a 619k jig on the micro-USB port). kprintf output is drawn onto
+  * the boot framebuffer described by the ADT node "sweet-fbcon":
+  *   reg    = <phys size>       absolute physical address, not arm-io relative
+  *   width, height              pixels
+--- a/bsd/kern/kern_mib.c
++++ b/bsd/kern/kern_mib.c
+@@ -520,7 +520,7 @@
+ 		 */
+ #if XNU_TARGET_OS_OSX && defined(__arm64__) && !defined(ARM64_BOARD_CONFIG_SWEET)
+ 	/* SWEET: the macOS config runs the iOS userland, which wants the
+-	 * device-tree names (hw.machine iPhone10,3, hw.model D22AP). */
++	 * device-tree names (hw.machine iPhone10,4, hw.model D201AP). */
+ 	/* The following two are kludged for backward
+ 	 * compatibility. Use hw.product/hw.target for something
+ 	 * consistent instead. */
