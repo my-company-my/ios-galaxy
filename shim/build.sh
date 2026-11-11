@@ -12,6 +12,7 @@
 # The header fields (base, offsets, page size, os_version, board name) and
 # the device tree blob (dt.img) are taken from the phone's stock boot
 # image: dtb/stock-boot.img (see README, "Back up the phone").
+# SHIM_IMAGE_ONLY=1 builds out/Image without it (CI, QEMU tests).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -75,11 +76,17 @@ PY
 		RAMDISK_ARGS=(--ramdisk "$PAYLOAD")
 	fi
 fi
-[ -f ../dtb/stock-boot.img ] || { echo "error: dtb/stock-boot.img missing (copy of the phone's BOOT partition)" >&2; exit 1; }
-python3 ../tools/mkbootimg_samsung.py --stock ../dtb/stock-boot.img --kernel out/Image \
-	"${RAMDISK_ARGS[@]}" -o out/shim-boot.img
+if [ -f ../dtb/stock-boot.img ]; then
+	python3 ../tools/mkbootimg_samsung.py --stock ../dtb/stock-boot.img --kernel out/Image \
+		"${RAMDISK_ARGS[@]}" -o out/shim-boot.img
+elif [ "${SHIM_IMAGE_ONLY:-0}" = 1 ]; then
+	echo "SHIM_IMAGE_ONLY=1: out/Image only (no dtb/stock-boot.img)"
+else
+	echo "error: dtb/stock-boot.img missing (copy of the phone's BOOT partition; tools/j7-flash.sh backup)" >&2
+	exit 1
+fi
 # Host render of the console layout (any C compiler for the host).
 if command -v cc >/dev/null; then
 	cc -O1 -Wall -o out/host_test console.c host_test.c && ./out/host_test
 fi
-ls -l out/Image out/shim-boot.img
+ls -l out/Image out/shim-boot.img 2>/dev/null || ls -l out/Image

@@ -1,90 +1,87 @@
 #!/bin/bash
-# Build the SWEET iOS root: one case-sensitive HFS+ image holding an iOS OS
-# root filesystem plus its cryptexes, for the userdata partition (rd=ufsroot0).
+# Build the J7 Neo iOS root on macOS: one case-sensitive journaled HFS+ image
+# holding the iPhone 8 iOS root filesystem plus its cryptexes, for the
+# USERDATA partition (rd=mmcroot0).
 #
-#   mkiosroot.sh OS.dmg SYSTEMOS.dmg APPOS.dmg OUT.img [SIZE]     (SIZE default 16G)
+#   tools/mkiosroot.sh OS.dmg SYSTEMOS.dmg APPOS.dmg OUT.img [EXTRA]
 #
-# The IPSW images are raw APFS with LZBITMAP-compressed files: they are read
-# through apfs-fuse (decompressing), so the HFS+ copy is uncompressed. On a
-# device /private/preboot is its own volume holding the cryptexes, which
+# EXTRA is the free space added on top of the copied files (default 3g;
+# hdiutil size syntax, e.g. 2500m, 4g). The image must stay at least
+# 8 MiB smaller than the phone's USERDATA partition: the kernel keeps its
+# console log in the last 4 MiB + 4 KiB of the partition, and
+# tools/j7-flash.sh checks it. The disk image names come from the IPSW's
+# BuildManifest.plist (OS, Cryptex1,SystemOS, Cryptex1,AppOS).
+#
+# macOS mounts the IPSW images itself (APFS); reading a compressed file
+# through the mount returns its plain data, so rsync writes uncompressed
+# files (the kernel has no AppleFSCompression). On a device
+# /private/preboot is its own volume holding the cryptexes, which
 # /System/Cryptexes/{OS,App} link to; here they live inside the one volume.
-# Owners, modes, symlinks and hard links are preserved (rsync -aH as root).
+# Owners, modes, symlinks and hard links are preserved (rsync -aH as root,
+# volumes attached with owners on).
 #
-# The volume is journaled (XNU replays the journal after a panic; Linux only
-# mounts it read-write with -o force and leaves the journal empty). SWEET
-# additions: /System/Library/Caches/com.apple.dyld hard-links the SystemOS
-# cryptex shared cache (ignition_level=1 looks there), and
+# Additions: /System/Library/Caches/com.apple.dyld hard-links the SystemOS
+# cryptex shared cache (ignition_level=1 looks there),
 # /private/var/keybags/systembag.kb is the plain-plist system keybag that
-# keybagd reads with /defaults/no-effaceable-storage (tools/mkadt.py).
+# keybagd reads with /defaults/no-effaceable-storage (tools/mkadt.py), and
+# tools/sweet-root-tweaks.py applies the bring-up changes at the end.
 set -euo pipefail
 
-[[ $# -ge 4 ]] || { sed -n '2,12p' "$0"; exit 2; }
-os=$(realpath "$1") sysos=$(realpath "$2") appos=$(realpath "$3") out=$4 size=${5:-16G}
+[[ $# -ge 4 ]] || { sed -n '2,13p' "$0"; exit 2; }
+[[ $(uname) == Darwin ]] || { echo "this script uses hdiutil: run it on macOS" >&2; exit 1; }
+abspath() { (cd "$(dirname "$1")" && echo "$PWD/$(basename "$1")"); }
+os=$(abspath "$1") sysos=$(abspath "$2") appos=$(abspath "$3") out=$4 extra=${5:-3g}
 [[ ! -e $out ]] || { echo "refusing to overwrite $out" >&2; exit 1; }
+here=$(cd "$(dirname "$0")" && pwd)
 
-# Pre-flight tool check
-missing_tools=()
-for tool in apfs-fuse mkfs.hfsplus rsync; do
-	command -v "$tool" >/dev/null 2>&1 || missing_tools+=("$tool")
-done
-
-if [[ ${#missing_tools[@]} -gt 0 ]]; then
-	echo "Error: missing required host utilities: ${missing_tools[*]}" >&2
-	echo "  Install instructions:" >&2
-	echo "    Arch Linux:    sudo pacman -S apfs-fuse hfsprogs rsync" >&2
-	echo "    Ubuntu/Debian: sudo apt install apfs-fuse hfsprogs rsync" >&2
-	echo "    Fedora:        sudo dnf install apfs-fuse hfsplus-tools rsync" >&2
-	exit 1
-fi
-
-work=$(mktemp -d)
-mounts=()
+work=$(mktemp -d /tmp/mkiosroot.XXXXXX)
+attached=()
 cleanup() {
-	local busy=0
-	for m in "${mounts[@]}"; do
-		if mountpoint -q "$m"; then
-			sudo umount "$m" 2>/dev/null || true
-		fi
-		mountpoint -q "$m" && busy=1
+	for (( i=${#attached[@]}-1; i>=0; i-- )); do
+		hdiutil detach -quiet "${attached[$i]}" 2>/dev/null || hdiutil detach -force -quiet "${attached[$i]}" 2>/dev/null || true
 	done
-	# Never recurse into a directory that is still mounted (the root is writable).
-	if [[ $busy == 0 ]]; then
-		rm -f "$work"/*.dmg
-		rmdir "$work"/* "$work" 2>/dev/null || true
-	else
-		echo "still mounted under $work: left in place" >&2
-	fi
+	rmdir "$work"/* "$work" 2>/dev/null || true
 }
 trap cleanup EXIT
 
-# apfs-fuse splits its options on ',' (e.g. in iPhone10,3 paths): use links.
-# Keep the .dmg name: apfs-fuse only parses UDIF images (the OS one is UDIF,
-# the cryptexes are raw APFS) when the file name ends in .dmg.
-apfs_mount() {
-	ln -s "$1" "$work/$2.dmg"
-	mkdir "$work/$2"
-	# As root: a user's FUSE mount is unreadable to the root rsync below.
-	sudo "$(command -v apfs-fuse)" "$work/$2.dmg" "$work/$2"
-	mounts+=("$work/$2")
+# Attach read-only at a mount point we choose; raw (cryptex) images need the raw class.
+attach_ro() {
+	local img=$1 mnt=$work/$2
+	mkdir "$mnt"
+	if ! hdiutil attach -readonly -nobrowse -owners on -mountpoint "$mnt" "$img" >/dev/null 2>&1; then
+		hdiutil attach -readonly -nobrowse -owners on -mountpoint "$mnt" \
+			-imagekey diskimage-class=CRawDiskImage "$img" >/dev/null
+	fi
+	attached+=("$mnt")
 }
-apfs_mount "$os" os
-apfs_mount "$sysos" sysos
-apfs_mount "$appos" appos
+attach_ro "$os" os
+attach_ro "$sysos" sysos
+attach_ro "$appos" appos
 
-truncate -s "$size" "$out"
-mkfs.hfsplus -s -J -v iOSRoot "$out"
+# Size: what the three volumes hold, plus EXTRA.
+used_k=$(sudo du -skx "$work/os" "$work/sysos" "$work/appos" | awk '{s += $1} END {print s}')
+extra_k=$(python3 -c "import sys; v=sys.argv[1].lower(); m={'k':1,'m':1024,'g':1048576,'t':1073741824}; print(int(float(v[:-1])*m[v[-1]]) if v[-1] in m else int(v)//1024)" "$extra")
+size_m=$(( (used_k + extra_k + 1023) / 1024 + 256 ))
+echo "files: $((used_k / 1024)) MiB, image: $size_m MiB"
+
+# Raw HFS+ volume, no partition map: -layout NONE, UDTO (raw) -> .cdr, renamed.
+hdiutil create -quiet -size "${size_m}m" -layout NONE -fs "Case-sensitive Journaled HFS+" \
+	-volname iOSRoot -type UDTO "$work/root-image"
+mv "$work/root-image.cdr" "$out"
 mkdir "$work/root"
-sudo mount -t hfsplus -o loop,force "$out" "$work/root"
-mounts=("$work/root" "${mounts[@]}")
+hdiutil attach -nobrowse -owners on -mountpoint "$work/root" "$out" \
+	-imagekey diskimage-class=CRawDiskImage >/dev/null
+attached+=("$work/root")
+sudo diskutil enableOwnership "$work/root" >/dev/null
 
 copy() {
 	echo "copying $1 -> ${2#"$work/root"}"
 	sudo mkdir -p "$2"
 	sudo rsync -aH --numeric-ids "$1/" "$2/"
 }
-copy "$work/os/root" "$work/root"
-copy "$work/sysos/root" "$work/root/private/preboot/Cryptexes/OS"
-copy "$work/appos/root" "$work/root/private/preboot/Cryptexes/App"
+copy "$work/os" "$work/root"
+copy "$work/sysos" "$work/root/private/preboot/Cryptexes/OS"
+copy "$work/appos" "$work/root/private/preboot/Cryptexes/App"
 
 # Shared cache where dyld looks at ignition level 1: hard links, no extra space.
 dsc=private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld
@@ -103,7 +100,6 @@ for c in OS App; do
 		if ! sudo test -e "$work/root/$f" && ! sudo test -L "$work/root/$f"; then
 			sudo mkdir -p "$work/root/$(dirname "$f")"
 			src="$work/root/private/preboot/Cryptexes/$c/$f"
-			# Linux hfsplus cannot hard-link symlinks: copy those.
 			if sudo test -L "$src"; then sudo cp -P "$src" "$work/root/$f"; else sudo ln "$src" "$work/root/$f"; fi
 			echo "linked $c:/$f"
 		fi
@@ -122,14 +118,22 @@ done
 
 # System keybag for the built-in AppleKeyStore (no passcode).
 sudo install -d -m 0700 -o 0 -g 0 "$work/root/private/var/keybags"
+kb=$(mktemp)
 printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
 	'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
-	'<plist version="1.0"><dict><key>KeyBagKeys</key><data>U1dFRVQ=</data></dict></plist>' |
-	sudo install -m 0600 -o 0 -g 0 /dev/stdin "$work/root/private/var/keybags/systembag.kb"
+	'<plist version="1.0"><dict><key>KeyBagKeys</key><data>U1dFRVQ=</data></dict></plist>' > "$kb"
+sudo install -m 0600 -o 0 -g 0 "$kb" "$work/root/private/var/keybags/systembag.kb"
+rm -f "$kb"
+
+sudo python3 "$here/sweet-root-tweaks.py" "$work/root"
 
 df -h "$work/root"
-sudo umount "$work/root"
-# Linux hfsplus decomposes some non-ASCII names (localized Shortcuts examples)
-# differently from Apple's tables; let fsck_hfs rewrite them, then verify.
-fsck.hfsplus -f -y "$out" | grep -v 'Illegal name' || true
-fsck.hfsplus -f -n "$out"
+hdiutil detach -quiet "$work/root"
+unset 'attached[${#attached[@]}-1]'
+
+# Verify the volume (journal replay, catalog) on the detached image.
+dev=$(hdiutil attach -nomount -nobrowse "$out" -imagekey diskimage-class=CRawDiskImage | awk 'NR==1{print $1}')
+sudo fsck_hfs -f -y "$dev" || true
+sudo fsck_hfs -f -n "$dev"
+hdiutil detach -quiet "$dev"
+ls -l "$out"

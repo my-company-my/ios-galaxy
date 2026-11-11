@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Apply the SWEET bring-up changes to an iOS root made by tools/mkiosroot.sh.
+"""Apply the bring-up changes to an iOS root made by tools/mkiosroot.sh.
 
   sudo sweet-root-tweaks.py MOUNTED_ROOT
 
-MOUNTED_ROOT is the HFS+ image mounted read-write (Linux: run
-`fsck.hfsplus -fy` on the image, then `mount -t hfsplus -o loop,force`).
-Run as root (it writes root/mobile owned files). Idempotent. This is what
-turned the plain mkiosroot.sh output into the images that reach the home
-screen (image versions v8-v14 in NOTES.md):
+MOUNTED_ROOT is the HFS+ image mounted read-write with owners enabled
+(tools/mkiosroot.sh runs this itself on macOS). Run as root (it writes
+root/mobile owned files). Idempotent. The build and version come from the
+image's SystemVersion.plist. These changes turned the plain root into the
+images that reach the home screen on the Redmi Note 10 Pro (image versions
+v8-v14 in NOTES.md); none of them is specific to the iPhone model:
 
   launchd.plist   _PanicOnCrash -> _PanicOnCrasX (a crashing daemon must not
                   panic the system); CommCenter jobs removed (no baseband: it
@@ -29,8 +30,8 @@ screen (image versions v8-v14 in NOTES.md):
 """
 import glob, os, plistlib, shutil, sys
 
-BUILD, VERSION = '20H392', '16.7.16'
 MOBILE = 501
+BUILD = VERSION = None   # from SystemVersion.plist (main)
 
 
 def load(path):
@@ -123,9 +124,13 @@ def audio(root):
 
 
 def main():
+    global BUILD, VERSION
     if len(sys.argv) != 2 or not os.path.isdir(os.path.join(sys.argv[1], 'System/Library/xpc')):
         sys.exit(__doc__)
     root = sys.argv[1]
+    sv = load(os.path.join(root, 'System/Library/CoreServices/SystemVersion.plist'))
+    BUILD, VERSION = sv['ProductBuildVersion'], sv['ProductVersion']
+    print(f'iOS {VERSION} ({BUILD})')
     launchd(root)
     containers(root)
     activation(root)
