@@ -7,6 +7,11 @@
 which must be pure ARMv8.0: the emulation is for user code only).
 --min-code-kib N: exit 1 if a file has less than N KiB of code (a guard
 against a parser bug that scans nothing; CI uses it on the kernel).
+--ignore-symbol NAME (repeatable, Mach-O with symbols only): do not count
+hits inside that symbol; for data tables kept in a code section, e.g. the
+kernel's K256 (SHA-256 constants in __text: K256[57] = 0x78a5636f has an
+LSE encoding). The ignored hits are still printed. Without symbols they
+count, so a stripped file fails instead of passing.
 
 The Galaxy J7 Neo's Cortex-A53 is ARMv8.0-A (+CRC, +Crypto). The iPhone 8
 userland targets the A11 (ARMv8.2). This scans the executable mappings of
@@ -62,6 +67,7 @@ PATTERNS = [
 S_ATTR_PURE_INSTRUCTIONS, S_ATTR_SOME_INSTRUCTIONS = 0x80000000, 0x400
 SHOW = 8
 MIN_KIB = 0
+IGNORE = set()
 
 
 def mappings_dsc(buf):
@@ -145,6 +151,7 @@ def scan(path):
     saddrs = [a for a, _ in syms]
     totals = {}
     per_func = collections.Counter()
+    ignored = collections.Counter()
     words_seen = 0
     for foff, size, addr in maps:
         size -= size % 4
@@ -152,20 +159,32 @@ def scan(path):
         words_seen += len(w)
         for name, mask, value, _ in PATTERNS:
             hits = np.nonzero((w & mask) == value)[0]
-            if len(hits):
+            if not len(hits):
+                continue
+            if not syms:
                 t = totals.setdefault(name, [0, []])
                 t[0] += len(hits)
                 for h in hits[:SHOW - len(t[1])]:
-                    a = addr + 4 * int(h)
-                    t[1].append((a, int(w[h]), symbolize(syms, saddrs, a) if syms else ''))
-                if syms:
-                    for h in hits:
-                        f = symbolize(syms, saddrs, addr + 4 * int(h)).rsplit('+', 1)[0]
-                        per_func[(f, name)] += 1
+                    t[1].append((addr + 4 * int(h), int(w[h]), ''))
+                continue
+            for h in hits:
+                a = addr + 4 * int(h)
+                sym = symbolize(syms, saddrs, a)
+                func = sym.rsplit('+', 1)[0]
+                if func in IGNORE:
+                    ignored[(func, name)] += 1
+                    continue
+                per_func[(func, name)] += 1
+                t = totals.setdefault(name, [0, []])
+                t[0] += 1
+                if len(t[1]) < SHOW:
+                    t[1].append((a, int(w[h]), sym))
     print(f'{path}: {kind}, {words_seen * 4 >> 10} KiB of code in {len(maps)} ranges'
           + (f', {len(syms)} symbols' if syms else ''))
     if words_seen * 4 >> 10 < MIN_KIB:
         sys.exit(f'{path}: less than {MIN_KIB} KiB of code scanned')
+    for (f, name), n in sorted(ignored.items()):
+        print(f'ignored (--ignore-symbol): {n} {name} in {f}')
     if per_func:
         print(f'functions with hits ({len(per_func)}, most first):')
         for (f, name), n in per_func.most_common(40):
@@ -178,6 +197,10 @@ def main():
     global MIN_KIB
     strict = '--strict' in args
     args = [a for a in args if a != '--strict']
+    while '--ignore-symbol' in args:
+        i = args.index('--ignore-symbol')
+        IGNORE.add(args[i + 1])
+        del args[i:i + 2]
     if '--min-code-kib' in args:
         i = args.index('--min-code-kib')
         MIN_KIB = int(args[i + 1])

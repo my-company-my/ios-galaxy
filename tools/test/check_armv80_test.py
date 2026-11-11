@@ -13,7 +13,10 @@ Checks that the scanner:
   - finds LSE and PSTATE (PAN/UAO/DIT/SSBS) accesses, but not the ARMv8.0
     system register accesses next to them in the encoding space;
   - names the function of each hit, exits 1 in --strict mode and with
-    --min-code-kib above the code size.
+    --min-code-kib above the code size;
+  - with --ignore-symbol, skips a data table kept in __text (the kernel's
+    SHA-256 K256: K256[57] = 0x78a5636f has an LSE encoding) but still
+    prints it, and counts it without the option.
 """
 import os, re, subprocess, sys, tempfile
 
@@ -54,6 +57,9 @@ _uses_pstate:
 	mrs	x2, DIT
 	msr	SSBS, x3
 	ret
+	.p2align 4
+K256:					// data in __text, like sha256_compress_arm64.s
+	.long	0x428a2f98, 0x71374491, 0x78a5636f, 0xc67178f2
 	.section __TEXT_EXEC,__commpage_text,regular,pure_instructions
 	.globl _pfz_like
 _pfz_like:
@@ -105,18 +111,24 @@ def main():
 
     with tempfile.TemporaryDirectory() as tmp:
         obj = assemble(tmp, 'mixed', SRC)
-        rc, out = run('--strict', obj)
+        rc, out = run('--strict', '--ignore-symbol', 'K256', obj)
         counts = dict(re.findall(r'^(\S+)\s+(\d+)\s+\(', out, re.M))
         check(rc == 1, '--strict exits 1 when something is found', out)
         check('in 2 ranges' in out, 'two instruction sections scanned (__text, __commpage_text), no data', out)
         check(counts.get('lse-cas') == '2', 'lse-cas: casal in __text + casa in __commpage_text', out)
-        check(counts.get('lse-rmw') == '2', 'lse-rmw: ldaddal + swp', out)
+        check(counts.get('lse-rmw') == '2', 'lse-rmw: ldaddal + swp (K256 ignored)', out)
         check(counts.get('pstate') == '8', 'pstate: 4 MSR immediate + 4 MRS/MSR register', out)
         check(len(counts) == 3, 'no other pattern matches', out)
         check('_plain_v80' not in out, 'ARMv8.0 system register accesses are not reported', out)
         check(re.search(r'^\s+1\s+lse-cas\s+_pfz_like$', out, re.M) is not None,
               'hit named by its function (_pfz_like)', out)
         check('ltmp' not in out, 'assembler temporary labels are not used as names', out)
+        check('ignored (--ignore-symbol): 1 lse-rmw in K256' in out, 'ignored K256 hit is printed', out)
+
+        rc, out = run(obj)
+        counts = dict(re.findall(r'^(\S+)\s+(\d+)\s+\(', out, re.M))
+        check(counts.get('lse-rmw') == '3' and 'K256+0x8' in out,
+              'without --ignore-symbol the K256 constant counts (K256+0x8)', out)
 
         rc, out = run('--min-code-kib', '1', obj)
         check(rc == 1 and 'less than 1 KiB' in out, '--min-code-kib fails when too little code is read', out)

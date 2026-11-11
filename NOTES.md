@@ -37,7 +37,23 @@
   __ARM_FEATURE_ATOMICS is not defined. Tested here: the two real PFZ
   functions, built both ways, give the same results in 7 cases on
   unicorn (Cortex-A53 model for LL/SC, max CPU for casa); casa on the A53
-  model raises an exception. Not yet seen: a CI build with these flags.
+  model raises an exception.
+- Run 43121916137 (84fddc5, -mcpu=cortex-a53): the kernel compiles with
+  the new flags (no errors); Verify scanned 8945 KiB in 4 instruction
+  sections and found 13 hits, down from 1108:
+  - 12 in firehose functions (_firehose_buffer_ring_enqueue,
+    __firehose_buffer_tracepoint_reserve, __firehose_merge_updates...),
+    at the same addresses as before: libfirehose_kernel.a, built by dxb
+    with xcodebuild for the default Mac CPU, not with xnu's flags. Fix:
+    tools/dxb-prepare.py adds OTHER_CFLAGS[arch=arm64] = (the xcconfig's
+    flags) -mcpu=cortex-a53 to libfirehose_kernel.xcconfig (libdispatch-
+    1415.140.2 has no hand-written LSE; target settings are empty, so the
+    xcconfig decides). x86_64/arm64e slices unchanged.
+  - 1 in K256: SHA-256 round constants kept in __text by
+    osfmk/arm64/corecrypto/sha256_compress_arm64.s; K256[57] = 0x78a5636f
+    matches the LSE pattern. Data, never executed: CI passes
+    --ignore-symbol K256 (the hit is still printed).
+  Not yet seen: a CI run with the firehose fix.
 - check-armv80.py now reads every instruction section (S_ATTR_*_INSTRUCTIONS:
   __commpage_text, __KLD...), detects MSR/MRS of PAN, UAO, DIT, SSBS, names
   the function of each hit and has a --min-code-kib guard (CI: 4096).
@@ -91,9 +107,8 @@
 
 ## Next action
 
-1. CI build with -mcpu=cortex-a53: fix any compile error the new flags
-   cause (code gated on Apple's __ARM_ARCH_8_x__ macros), then the Verify
-   step must report no post-ARMv8.0 encodings in >= 4 MiB of code.
+1. CI run with the firehose fix: the Verify step must report no
+   post-ARMv8.0 encodings in >= 4 MiB of code (K256 ignored).
 2. User: back up the phone (tools/j7-flash.sh backup), build the boot
    image with an empty ramdisk first (shim/build.sh) and check the shim
    screen (CPU line, INITRD line).

@@ -82,9 +82,9 @@ jobs:
           git -C dxb checkout -q FETCH_HEAD
           # 12.5-14.3 use the top-level patches dir; ours go next to blacktop's
           cp xnu/patches/*.patch xnu/patches/*.sh dxb/patches/
-          # libfirehose_kernel is built arm64e-only; the SWEET (J7 Neo) kernel is plain arm64
-          sed -i '' 's/ARCHS="x86_64 arm64e" VALID_ARCHS="x86_64 arm64e"/ARCHS="x86_64 arm64e arm64" VALID_ARCHS="x86_64 arm64e arm64"/' dxb/build.sh
-          grep -c 'VALID_ARCHS="x86_64 arm64e arm64"' dxb/build.sh
+          # libfirehose_kernel (linked into the kernel): add the plain arm64
+          # slice and build it for the Cortex-A53 (see the script)
+          python3 tools/dxb-prepare.py dxb
           ls dxb/patches
 
       - name: Deps
@@ -123,7 +123,10 @@ jobs:
           K=dxb/fakeroot/System/Library/Kernels/kernel.development.sweet
           file "$K"
           pip3 install --break-system-packages -q numpy
-          python3 tools/check-armv80.py --strict --min-code-kib 4096 "$K"
+          # K256: SHA-256 round constants kept in __text by
+          # osfmk/arm64/corecrypto/sha256_compress_arm64.s (data, never
+          # executed); K256[57] = 0x78a5636f has an LSE encoding.
+          python3 tools/check-armv80.py --strict --min-code-kib 4096 --ignore-symbol K256 "$K"
 
       - name: Package build tree for local compiles
         if: always()

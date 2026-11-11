@@ -37,8 +37,11 @@ if [ ! -d "$work/dxb" ]; then
 	git init -q "$work/dxb"
 	git -C "$work/dxb" fetch -q --depth 1 "$DXB_REPO" "$DXB_SHA"
 	git -C "$work/dxb" checkout -q FETCH_HEAD
-	sed -i '' 's/ARCHS="x86_64 arm64e" VALID_ARCHS="x86_64 arm64e"/ARCHS="x86_64 arm64e arm64" VALID_ARCHS="x86_64 arm64e arm64"/' "$work/dxb/build.sh"
 fi
+# libfirehose_kernel (linked into the kernel): plain arm64 slice for the
+# Cortex-A53. Remove a copy left by an earlier run so it is rebuilt with it.
+python3 "$repo/tools/dxb-prepare.py" "$work/dxb"
+rm -f "$work/dxb/fakeroot/usr/local/lib/kernel/libfirehose_kernel.a"
 cp "$repo"/xnu/patches/*.patch "$repo"/xnu/patches/*.sh "$work/dxb/patches/"
 cd "$work/dxb"
 MACOS_VERSION=13.5 KERNEL_CONFIG=DEVELOPMENT MACHINE_CONFIG=SWEET MAKEFLAGS=-k \
@@ -46,3 +49,5 @@ MACOS_VERSION=13.5 KERNEL_CONFIG=DEVELOPMENT MACHINE_CONFIG=SWEET MAKEFLAGS=-k \
 mkdir -p "$repo/xnu/out"
 cp fakeroot/System/Library/Kernels/kernel.development.sweet "$repo/xnu/out/"
 ls -l "$repo/xnu/out/kernel.development.sweet"
+# Same check as CI: the Cortex-A53 has no ARMv8.1+ instructions
+python3 "$repo/tools/check-armv80.py" --strict --min-code-kib 4096 --ignore-symbol K256 "$repo/xnu/out/kernel.development.sweet"
