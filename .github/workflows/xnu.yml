@@ -45,13 +45,15 @@ jobs:
       - name: Deps
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q clang lld llvm qemu-system-arm python3-numpy python3-pil
+          sudo apt-get install -y -q clang lld llvm qemu-system-arm python3-numpy python3-pil mksh
       - name: Repository checks
         run: python3 tools/validate-repo.py
       - name: LSE emulation unit test
         run: python3 tools/test/lse_test.py
       - name: ISA scanner test (check-armv80.py on clang Mach-O objects)
         run: python3 tools/test/check_armv80_test.py
+      - name: TWRP diagnostic script on a fake /sys (mksh, as in TWRP)
+        run: bash tools/twrp-diag/test.sh
       - name: Build shim
         run: SHIM_IMAGE_ONLY=1 bash shim/build.sh
       - name: Shim hand-off in QEMU (ramdisk, appended, boot core 0x102, EL2 entry)
@@ -240,6 +242,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: xnu-kernel
@@ -256,7 +259,10 @@ jobs:
           mkdir -p rel
           cp kernel/kernel.development.sweet app/iOS-Galaxy.app.zip rel/
           [ -f app/capturas.zip ] && cp app/capturas.zip rel/
-          (cd rel && sha256sum kernel.development.sweet iOS-Galaxy.app.zip > SHA256SUMS && cat SHA256SUMS)
+          # Diagnostic TWRP: the checked j7velte image + tools/twrp-diag (only the ramdisk changes)
+          curl -fsSL --retry 3 -o twrp.img "https://github.com/batuhantrkgl/releases/releases/download/TWRP-3.7.1-Exynos7870-Stable/TWRP-3.7.1-j7velte-%40Batuhantrkgl.img"
+          python3 tools/twrp-diag/twrp-diag.py twrp.img rel/twrp-j7velte-iosgalaxy-diag.img
+          (cd rel && sha256sum kernel.development.sweet iOS-Galaxy.app.zip twrp-j7velte-iosgalaxy-diag.img > SHA256SUMS && cat SHA256SUMS)
           run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           cat > notes.md <<EOF
           Kernel y app de la CI (run $GITHUB_RUN_ID, commit ${GITHUB_SHA:0:7}, rama $GITHUB_REF_NAME).
@@ -264,6 +270,7 @@ jobs:
           - kernel.development.sweet: los 88+ parches aplicados y sin instrucciones posteriores a ARMv8.0 (paso Verify).
           - iOS-Galaxy.app.zip: la app para Mac (macOS 13+, Apple Silicon e Intel), firmada ad hoc.
           - capturas.zip: cada paso de la app, capturado en la CI.
+          - twrp-j7velte-iosgalaxy-diag.img: TWRP de diagnóstico (USB en el J701M): escribe /sdcard/iosgalaxy-twrp-diag.txt y vuelve a Android a los 90 s si ninguna computadora configura el USB.
 
           $run_url
           EOF

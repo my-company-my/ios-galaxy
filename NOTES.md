@@ -191,6 +191,33 @@
   TWRP download command was run here against GitHub: real SHA-256
   accepted, wrong one rejected with nothing left behind.
 
+## TWRP on the SM-J701M: no USB (2026-11-12)
+
+- Observed by the user: TWRP-3.7.1-j7velte writes fine (Heimdall "upload
+  successful", no red text) and stays installed (Android does not replace
+  it; "adb reboot recovery" from Android opens it). Holding Vol+ and Home
+  during Heimdall's automatic restart does not enter recovery (Android
+  starts). Touch never works in this TWRP on the phone (the user says that
+  is expected). The Mac sees no USB device at all in TWRP, also after
+  replugging (in Android it does). Home + Vol- while plugging the USB cable
+  into a powered-off phone (battery reinserted) opens TWRP without the
+  power button.
+- Guess, not verified: the pmOS port tested on an SM-J701M needs the
+  S2MU005 MUIC D+/D- switch set (0xB5 = 0x24) before USB works; this TWRP
+  kernel ("3.18.140-SIMPLE-KERNEL", DTBs "J7VE LTE SEA OPEN") may leave it
+  open. Its MUIC driver has usb_sel / uart_sel / usb_state / attached_dev
+  sysfs files and parses switch_sel; no i2c tools in the ramdisk.
+- tools/twrp-diag: the same image with one service that writes a report
+  (/sdcard/iosgalaxy-twrp-diag.txt: cmdline, android_usb, MUIC files,
+  props, dmesg), writes usb_sel = PDA, restarts the gadget, and restarts
+  into Android after 90 s unless a computer configured USB. Only the
+  ramdisk differs (header/kernel/dt identical; rebuilding with the original
+  ramdisk gives the original image byte for byte; no hard links or device
+  nodes in the cpio). test.sh checks the script on a fake /sys (mksh, dash).
+  The CI publishes twrp-j7velte-iosgalaxy-diag.img in the release.
+- Not tried yet: Home + Vol+ and Vol+ + Vol- while plugging USB (looking
+  for a power-button-free way into Download mode / Android from TWRP).
+
 ## Decisions taken with the user
 
 - Identity iPhone 8 (iPhone10,4 / D201AP), 750x1334 @2x scaled to 720x1280
