@@ -96,6 +96,21 @@
   The app's Swift code cannot be compiled here (no Swift on this Linux):
   the CI app job builds it on macos-15, runs --selftest and takes a PNG of
   every step (capturas.zip in the release).
+- CI run 43196699703 (f7b1d00): all jobs pass. App job on macos-15:
+  gui/build-app.sh builds the universal app, --selftest passes (adb
+  parsing, bash quoting round trip, line splitting, JSON of ipsw-fetch /
+  parts.json / release API, Shell.capture with a child holding the pipe
+  and a timeout, Runner stdin "ERASE\n", failure line, Detener),
+  heimdall-build.sh builds v2.2.2 with Homebrew libusb and `detect`
+  exits 1, ipsw-fetch.py lists and fetches the DeviceTree, mkadt.py uses
+  it; the step captures show every page rendered (no phone: buttons
+  disabled with the key hints). The release job published "latest":
+  kernel.development.sweet, iOS-Galaxy.app.zip, capturas.zip, SHA256SUMS
+  (checked after download here).
+- CI run 43198765307 (fe068a7): all jobs pass; the snapshot run now quits
+  by itself ("snapshots done", no kill); window 1100x900 by default (the
+  CI screen is 1024x768, so captures are 1024x681); the release "latest"
+  is from this run.
 - Not verified: the app with a real phone (adb/Heimdall states, flashing),
   the administrator dialog path, the TWRP .tar extraction with a real
   Samsung tar.
