@@ -5,6 +5,7 @@ recovery/
 # third-party/Apple sources fetched for reading
 research/
 shim/out/
+shim/out-esc/
 gui/out/
 xnu/out/
 xnu/out-*/

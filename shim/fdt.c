@@ -1,6 +1,7 @@
 /*
- * Just enough flattened-device-tree parsing to find what ABL put in
- * /chosen (initrd location). Big-endian, 4-byte aligned tokens.
+ * Just enough flattened-device-tree parsing to find what S-BOOT put in
+ * /chosen (initrd location) and the root "compatible" list. Big-endian,
+ * 4-byte aligned tokens.
  */
 #include "fdt.h"
 
@@ -78,6 +79,43 @@ int fdt_chosen_u64(uintptr_t fdt, const char *prop, uint64_t *out)
 		case FDT_NOP:
 			break;
 		default:	/* FDT_END or garbage */
+			return 0;
+		}
+	}
+}
+
+int fdt_root_compatible(uintptr_t fdt, const char *want)
+{
+	if (!fdt || be32(fdt) != FDT_MAGIC)
+		return 0;
+	uintptr_t p = fdt + be32(fdt + 8);
+	uintptr_t strings = fdt + be32(fdt + 12);
+	int depth = 0;
+
+	for (;;) {
+		uint32_t tok = be32(p);
+		p += 4;
+		switch (tok) {
+		case FDT_BEGIN_NODE:
+			if (++depth > 1)
+				return 0;	/* the root's properties come before its children */
+			p = align4(skip_str(p));
+			break;
+		case FDT_PROP: {
+			uint32_t len = be32(p), nameoff = be32(p + 4);
+			uintptr_t val = p + 8;
+			if (depth == 1 && streq((const char *)(strings + nameoff), "compatible")) {
+				for (uintptr_t s = val; s < val + len; s = skip_str(s))
+					if (streq((const char *)s, want))
+						return 1;
+				return 0;
+			}
+			p = align4(val + len);
+			break;
+		}
+		case FDT_NOP:
+			break;
+		default:	/* end of the root node, FDT_END or garbage */
 			return 0;
 		}
 	}

@@ -158,6 +158,33 @@
   format; the warning came from the Qualcomm Redmi port). Building with
   the TWRP image as stock copies its dt.img unchanged.
 
+## No power button (2026-11-12)
+
+- The user's power button is broken. Decided with the user: Heimdall
+  writes TWRP with its automatic restart (no --no-reboot) while Vol+ and
+  Home are held; the app downloads the checked TWRP image (SHA-256, size)
+  and keeps "Elegir otra"; restart buttons always visible (adb reboot
+  recovery / download / Android; from Download mode `heimdall print-pit`,
+  which only reads the PIT and then restarts, checked in Heimdall's
+  source); an escape in the shim and the kernel.
+- Restart reason: PMU INFORM3 (0x10480000 + 0x80c), recovery 0x12345674,
+  download 0x12345671, from mainline Linux 7.4-rc2 exynos7870.dtsi
+  (syscon-reboot-mode); then PSCI SYSTEM_RESET (SMC; the shim keeps
+  HCR_EL2 = RW only, so SMC goes to EL3), then PMU SWRESET (0x400 = 1) if
+  the firmware returns. Not verified on the phone: that S-BOOT honours
+  INFORM3 after a PSCI reset (mainline relies on it: no syscon-reboot node).
+- shim/escape.c: armed only when the DT root compatible has
+  "samsung,exynos7870" (checked on the 3 J7VE DTBs of the TWRP image: yes;
+  QEMU virt: no). Vol+ held 300 ms = TWRP, Vol- = Download, both = nothing;
+  checked at start and in every halt (also the exception screen).
+  tools/qemu-j7.py --escape up|down|none builds shim/out-esc with the
+  registers in RAM and checks INFORM3 and the reset request (CI).
+- Patch 0089 (bsd/dev/sweet_keys.c): Vol+ and Vol- held 3 s = TWRP; boot-
+  arg sweetescape=0. Syntax-checked with xnu's warnings (same diagnostics
+  as before; found a missing ml_io_map declaration first); 0082-0088
+  unchanged; work/xnu + 0082..0089 == edited tree.
+- The J7 Neo's battery is removable (last resort).
+
 ## Decisions taken with the user
 
 - Identity iPhone 8 (iPhone10,4 / D201AP), 750x1334 @2x scaled to 720x1280

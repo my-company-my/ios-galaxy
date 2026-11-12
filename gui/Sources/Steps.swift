@@ -23,9 +23,9 @@ struct ModeHint: View {
     var text: String {
         switch mode {
         case .twrp:
-            return "Esto necesita el teléfono en TWRP con adb (ahora: \(phone.adb.label)). Con el teléfono apagado, mantén Vol+ + Home + Power hasta ver TWRP y conéctalo al Mac por USB."
+            return "Esto necesita el teléfono en TWRP con adb (ahora: \(phone.adb.label)). Sin el botón de encendido: desde Android con depuración USB, \"Reiniciar en: TWRP\" (arriba); desde Download mode, \"Salir de Download\" con Vol+ y Home pulsados; si corre el shim, mantén Vol+; si corre iOS, Vol+ y Vol− juntos 3 s."
         case .download:
-            return "Esto necesita el teléfono en Download mode. Apágalo, mantén Vol− + Home + Power y, en la pantalla de advertencia, pulsa Vol+. Conéctalo al Mac por USB."
+            return "Esto necesita el teléfono en Download mode (y Heimdall). Sin el botón de encendido: desde Android con depuración USB o desde TWRP, \"Reiniciar en: Download\" (arriba); si corre el shim, mantén Vol−. En la pantalla de advertencia pulsa Vol+."
         }
     }
 }
@@ -244,42 +244,58 @@ struct TWRPStep: View {
     @AppStorage("twrpPath") var twrpPath = ""
 
     var body: some View {
+        let _ = state.fileTick
+        let checked = twrpPath == Config.twrpFile.path && fileInfo(Config.twrpFile)?.size == Config.twrpBytes
         VStack(alignment: .leading, spacing: 12) {
-            Panel(title: "1. Prepara el teléfono") {
-                Text("• En Android: Ajustes › Opciones de desarrollador › Desbloqueo OEM activado.")
-                Text("• Apaga el teléfono. Mantén Vol− + Home + Power; en la advertencia pulsa Vol+ (Download mode). En Download mode debe decir \"OEM LOCK: OFF\".")
-                Text("• Conéctalo al Mac por USB. Arriba aparece \"Download mode detectado\".")
+            Panel(title: "1. Download mode sin el botón de encendido") {
+                Text("• En Android: Ajustes › Acerca del teléfono › Información de software: toca 7 veces \"Número de compilación\". Luego Opciones de desarrollador: activa \"Desbloqueo OEM\" y \"Depuración USB\".")
+                Text("• Conecta el cable y acepta \"Permitir depuración USB\" en el teléfono. Arriba debe decir \"Android encendido\".")
+                Text("• Pulsa \"Entrar en Download mode\". En la pantalla de advertencia pulsa Vol+ para continuar (Vol− cancela y reinicia). Debe decir \"OEM LOCK: OFF\".")
+                Act(title: "Entrar en Download mode", symbol: "arrow.down.to.line",
+                    enabled: phone.adb == .android || phone.adb == .recovery, prominent: !phone.download) {
+                    await runner.run("Reiniciar en Download mode (adb)", "adb reboot download")
+                }
+                if phone.adb == .unauthorized {
+                    Banner(text: "adb ve el teléfono pero no está autorizado: acepta \"Permitir depuración USB\" en la pantalla del teléfono.", color: .orange)
+                }
             }
             Panel(title: "2. Imagen de TWRP") {
                 HStack {
                     Text(twrpPath.isEmpty ? "Ninguna elegida" : twrpPath)
                         .lineLimit(1).truncationMode(.middle)
                         .foregroundColor(twrpPath.isEmpty ? .secondary : .primary)
+                    if checked {
+                        Label("verificada", systemImage: "checkmark.seal.fill").foregroundColor(.green)
+                    }
                     Spacer()
-                    Button("Elegir…") { pick() }
+                    Act(title: "Descargar TWRP verificado", symbol: "arrow.down.circle", prominent: !checked) {
+                        await downloadTWRP()
+                    }
+                    Button("Elegir otra…") { pick() }
                 }
-                Text("No hay TWRP oficial para el J7 Neo (j7velte) en twrp.me: usa una imagen hecha para el SM-J701 (.img, o .tar / .tar.md5 con recovery.img dentro).")
-                    .font(.caption).foregroundColor(.secondary)
+                Text("No hay TWRP oficial para el J7 Neo. La descarga es TWRP-3.7.1-j7velte (no oficial, de la release TWRP-3.7.1-Exynos7870-Stable en GitHub), revisado para este teléfono: j7velte, chip 7870, particiones BOOT/RECOVERY/USERDATA, adb. La app comprueba su SHA-256.")
+                    .font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if !phone.heimdallInstalled {
                 Banner(text: "Falta Heimdall: compílalo en el paso 0.", symbol: "exclamationmark.triangle.fill", color: .orange)
             }
             ModeHint(mode: .download)
-            Act(title: "Escribir TWRP en RECOVERY", symbol: "square.and.arrow.down.on.square",
-                enabled: phone.heimdallInstalled && phone.download && FileManager.default.fileExists(atPath: twrpPath),
-                prominent: true) {
-                state.requestWrite(.recovery, title: "Escribir la partición RECOVERY",
-                    message: "Heimdall reemplaza la recuperación del teléfono por \((twrpPath as NSString).lastPathComponent). Android y tus datos no se tocan.") {
-                    await flash()
-                }
-            }
-            Panel(title: "3. Después") {
-                Text("Heimdall no reinicia el teléfono. Mantén Vol− + Power hasta que se apague la pantalla y en ese momento cambia a Vol+ + Home + Power: así entra a TWRP. Si Android arranca antes, puede volver a poner la recuperación original y hay que repetir.")
+            Panel(title: "3. Escribir y entrar a TWRP") {
+                Text("Heimdall reinicia el teléfono solo al terminar. Para que arranque en TWRP (y no en Android, que puede volver a poner la recuperación original): escribe RECOVERY en la confirmación, luego mantén Vol+ y Home, pulsa \"Escribir\" y no los sueltes hasta ver TWRP.")
                     .fixedSize(horizontal: false, vertical: true)
+                Act(title: "Escribir TWRP en RECOVERY", symbol: "square.and.arrow.down.on.square",
+                    enabled: phone.heimdallInstalled && phone.download && FileManager.default.fileExists(atPath: twrpPath),
+                    prominent: true) {
+                    state.requestWrite(.recovery, title: "Escribir la partición RECOVERY",
+                        message: "Heimdall reemplaza la recuperación del teléfono por \((twrpPath as NSString).lastPathComponent) y reinicia el teléfono. Android y tus datos no se tocan. Después de escribir RECOVERY: mantén Vol+ y Home y pulsa Escribir; no los sueltes hasta ver TWRP.") {
+                        await flash()
+                    }
+                }
+                Text("Si arrancó Android: vuelve a \"Entrar en Download mode\" y repite. Si el teléfono quedó en Download mode, \"Salir de Download\" (arriba) lo reinicia sin el botón de encendido.")
+                    .font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
-        .onAppear { phone.watchDownload = true; phone.poll() }
-        .onDisappear { phone.watchDownload = false }
+        .onAppear { phone.poll() }
     }
 
     func pick() {
@@ -290,20 +306,46 @@ struct TWRPStep: View {
         if p.runModal() == .OK, let u = p.url { twrpPath = u.path }
     }
 
+    /// curl to a .part file, check size and SHA-256, then rename.
+    func downloadTWRP() async {
+        let dir = Config.twrpFile.deletingLastPathComponent()
+        let file = Config.twrpFile
+        let part = file.path + ".part"
+        let cmd = """
+        set -e; mkdir -p \(sq(dir.path))
+        curl -fsSL --retry 3 -o \(sq(part)) \(sq(Config.twrpURL))
+        size=$(wc -c < \(sq(part)) | tr -d ' ')
+        got=$(shasum -a 256 \(sq(part)) | awk '{print $1}')
+        if [ "$got" != \(sq(Config.twrpSHA256)) ] || [ "$size" != \(Config.twrpBytes) ]; then
+          echo "La descarga no coincide: SHA-256 $got, $size bytes (esperado \(Config.twrpSHA256), \(Config.twrpBytes) bytes)"; rm -f \(sq(part)); exit 1
+        fi
+        mv \(sq(part)) \(sq(file.path))
+        echo "TWRP verificado: $size bytes, SHA-256 $got"
+        """
+        let r = await runner.run("Descargar TWRP para j7velte", cmd)
+        if r.ok { twrpPath = file.path }
+        state.refreshFiles()
+    }
+
+    /// Without --no-reboot: Heimdall restarts the phone when it finishes
+    /// (the user's power button is broken; Vol+ and Home held -> TWRP).
     func flash() async {
         let f = twrpPath
         let cmd: String
         if f.lowercased().hasSuffix(".img") {
-            cmd = "heimdall flash --RECOVERY \(sq(f)) --no-reboot"
+            cmd = "heimdall flash --RECOVERY \(sq(f))"
         } else {
             cmd = """
             t=$(mktemp -d) && tar -xOf \(sq(f)) recovery.img > "$t/recovery.img" 2>/dev/null; \
             if [ ! -s "$t/recovery.img" ]; then echo no hay recovery.img dentro de \(sq(f)); rm -rf "$t"; exit 1; fi; \
-            heimdall flash --RECOVERY "$t/recovery.img" --no-reboot; rc=$?; rm -rf "$t"; exit $rc
+            heimdall flash --RECOVERY "$t/recovery.img"; rc=$?; rm -rf "$t"; exit $rc
             """
         }
         let r = await runner.run("Escribir TWRP en RECOVERY", cmd)
-        if r.ok { state.setDone(2) }
+        if r.ok {
+            runner.log("El teléfono se reinicia: mantén Vol+ y Home hasta ver TWRP.", .info)
+            state.setDone(2)
+        }
     }
 }
 
@@ -406,7 +448,7 @@ struct ShimTestStep: View {
             Panel(title: "Qué mirar en la pantalla") {
                 Text("• La línea de CPU: debe decir Cortex-A53 y el nivel de excepción (EL).")
                 Text("• La línea INITRD. Si dice \"INITRD none in /chosen\", S-BOOT no pasó el ramdisk: en el paso 8 activa \"payload dentro del kernel\".")
-                Text("• Para volver a TWRP: mantén Vol− + Power hasta que se apague y cambia a Vol+ + Home + Power.")
+                Text("• Para volver a TWRP sin el botón de encendido: mantén Vol+ con el shim en pantalla (Vol− = Download mode). El shim lo muestra en la línea KEYS.")
                 Text("Cuando lo hayas visto, marca \"Paso hecho\" abajo.").foregroundColor(.secondary)
             }
         }
@@ -647,7 +689,7 @@ struct FullBootStep: View {
                     await runner.run("Reiniciar", "adb reboot")
                 }
             }
-            Text("Después del arranque vuelve a TWRP (Vol− + Power, luego Vol+ + Home + Power) y lee el log en el paso 9, o míralo en vivo por USB.")
+            Text("Para volver a TWRP sin el botón de encendido: mantén Vol+ mientras arranca (shim), o Vol+ y Vol− juntos 3 s con iOS corriendo (kernel, boot-arg sweetescape=0 lo apaga). Luego lee el log en el paso 9, o míralo en vivo por USB.")
                 .font(.callout).foregroundColor(.secondary)
         }
     }

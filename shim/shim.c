@@ -2,11 +2,13 @@
  * Galaxy J7 Neo boot shim: S-BOOT boots this as "the kernel" of an Android
  * boot image. It checks the CPU, finds the SWEETXNU payload (in the boot
  * image ramdisk, or appended to this image) and boots XNU like iBoot
- * would (loader.c). Anything unexpected stays on screen; hold Power +
- * Volume down to restart the phone.
+ * would (loader.c). Anything unexpected stays on screen. Without the power
+ * button (escape.c): hold Volume up while it starts or while it shows a
+ * message to restart into TWRP, Volume down for Download mode.
  */
 #include <stdint.h>
 #include "console.h"
+#include "escape.h"
 #include "loader.h"
 
 #define rsr(r) ({ uint64_t _v; __asm__ volatile("mrs %0, " r : "=r"(_v)); _v; })
@@ -16,9 +18,8 @@ static const char *stage;	/* set at runtime: no absolute pointers in data */
 static void __attribute__((noreturn)) halt(void)
 {
 	con_skip();
-	con_str("HALT", "hold Power + Vol down to restart");
-	for (;;)
-		__asm__ volatile("wfe");
+	con_str("HALT", "stopped");
+	esc_wait();
 }
 
 void exc_handler(uint64_t slot, uint64_t *regs)
@@ -48,6 +49,9 @@ void shim_main(uint64_t dtb, uint64_t entry_el)
 	stage = "checks";
 	con_clear(RED);
 	con_str("SHIM", "j7neo: xnu loader");
+	if (esc_init(dtb))
+		con_str("KEYS", "hold Vol+ = TWRP, Vol- = Download");
+	esc_check();
 	con_skip();
 	con_hex2("CPU", "el=", (uint32_t)entry_el, "mpidr=", (uint32_t)rsr("mpidr_el1"));
 	con_hex2("MIDR", "", (uint32_t)rsr("midr_el1"), "frq=", (uint32_t)rsr("cntfrq_el0"));

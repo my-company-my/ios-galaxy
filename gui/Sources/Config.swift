@@ -28,6 +28,14 @@ enum Config {
     /// python3 scripts run with it, and nothing else on the Mac changes.
     static var venv: URL { support.appendingPathComponent("venv") }
 
+    /// Unofficial TWRP for j7velte, checked in this repo (README "TWRP y
+    /// respaldo", NOTES): j7velte props, J7VE DTBs for the 7870, the
+    /// 13540000.dwmmc0 partitions, adb root. The app checks this SHA-256.
+    static let twrpURL = "https://github.com/batuhantrkgl/releases/releases/download/TWRP-3.7.1-Exynos7870-Stable/TWRP-3.7.1-j7velte-%40Batuhantrkgl.img"
+    static let twrpSHA256 = "696cc964d70c6fdb86952b477f9afd5a2adefa3e259eea32c5df31db8f52b69f"
+    static let twrpBytes: Int64 = 30_072_832
+    static var twrpFile: URL { support.appendingPathComponent("twrp/TWRP-3.7.1-j7velte.img") }
+
     static var kernel: URL { repo.appendingPathComponent("xnu/out/kernel.development.sweet") }
     static var stockBoot: URL { repo.appendingPathComponent("dtb/stock-boot.img") }
     static var bootImage: URL { repo.appendingPathComponent("shim/out/shim-boot.img") }

@@ -1,0 +1,114 @@
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -15,6 +15,13 @@
+  * sweettouchkeys=0 leaves the chip unpowered.
+  *
+  * sweet_hid_key(): 0 power, 1 volume up, 2 volume down, 3 home.
++ *
++ * Restart without the power button (the user's phone has a broken one):
++ * Volume up and Volume down held together for 3 s restart into TWRP. The
++ * restart reason goes in PMU INFORM3 (0x10480000 + 0x80c, recovery
++ * 0x12345674: mainline Linux exynos7870.dtsi syscon-reboot-mode, the same
++ * as shim/escape.c), then PSCI SYSTEM_RESET; if the firmware returns, PMU
++ * SWRESET (what Samsung's kernel writes). Boot-arg sweetescape=0 turns it off.
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <sys/param.h>
+@@ -27,6 +34,7 @@
+ #include "sweet_exynos.h"
+ 
+ extern void sweet_hid_key(int key, int down);
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);  /* osfmk, not exported to BSD headers */
+ extern int hz;
+ void sweet_keys_init(void);
+ 
+@@ -34,6 +42,13 @@
+ #define TKEY_ADDR               0x20
+ #define TKEY_REG_KEYCODE        0x00
+ 
++#define ESCAPE_HOLD_MS          3000
++#define PMU_BASE                0x10480000UL
++#define PMU_SWRESET             0x0400
++#define PMU_INFORM3             0x080c
++#define REBOOT_MODE_RECOVERY    0x12345674u
++#define PSCI_SYSTEM_RESET       0x84000009UL
++
+ static const struct {
+ 	enum sweet_gpio_bank bank;
+ 	uint8_t pin;
+@@ -48,6 +63,7 @@
+ 
+ static bool keys_started;
+ static bool tkeys_on;
++static bool escape_on = true;
+ static int keys_sleep_chan;
+ 
+ static void
+@@ -69,6 +85,30 @@
+ 	sweet_hid_key(3, 0);
+ }
+ 
++static void __attribute__((noreturn))
++keys_restart_recovery(void)
++{
++	printf("SWEET KEYS: volume up + down held %d ms: restarting into TWRP\n", ESCAPE_HOLD_MS);
++	vm_offset_t pmu = ml_io_map(PMU_BASE, 0x1000);
++	(void)ml_set_interrupts_enabled(FALSE);
++	if (pmu) {
++		*(volatile uint32_t *)(pmu + PMU_INFORM3) = REBOOT_MODE_RECOVERY;
++		__builtin_arm_dsb(0xf);
++	}
++	register uint64_t x0 __asm__("x0") = PSCI_SYSTEM_RESET;
++	__asm__ volatile ("smc #0" : "+r"(x0) : :
++	    "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9",
++	    "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "memory");
++	/* The firmware returned: PMU software reset. */
++	if (pmu) {
++		*(volatile uint32_t *)(pmu + PMU_SWRESET) = 1;
++		__builtin_arm_dsb(0xf);
++	}
++	for (;;) {
++		__builtin_arm_wfe();
++	}
++}
++
+ static void
+ tkeys_init(void)
+ {
+@@ -118,6 +158,7 @@
+ 		state[k] = sweet_gpio_get(keys[k].bank, keys[k].pin) == 0;
+ 	}
+ 	tkeys_init();
++	unsigned both_ms = 0;   /* how long volume up and down have been held together */
+ 	for (;;) {
+ 		for (unsigned k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
+ 			int level = sweet_gpio_get(keys[k].bank, keys[k].pin);
+@@ -134,6 +175,16 @@
+ 		if (tkeys_on) {
+ 			tkeys_poll();
+ 		}
++		/* keys[1] is volume up, keys[2] volume down. Counted in poll steps,
++		 * so a slow loop only makes the hold longer, never shorter. */
++		if (escape_on && state[1] && state[2]) {
++			both_ms += KEYS_POLL_MS;
++			if (both_ms >= ESCAPE_HOLD_MS) {
++				keys_restart_recovery();
++			}
++		} else {
++			both_ms = 0;
++		}
+ 		keys_wait(KEYS_POLL_MS);
+ 	}
+ }
+@@ -153,6 +204,11 @@
+ 		printf("SWEET KEYS: disabled (sweetkeys=0)\n");
+ 		return;
+ 	}
++	int escape = 1;
++	(void)PE_parse_boot_argn("sweetescape", &escape, sizeof(escape));
++	escape_on = escape != 0;
++	printf("SWEET KEYS: volume up + down %d ms = restart into TWRP: %s\n", ESCAPE_HOLD_MS,
++	    escape_on ? "on" : "off (sweetescape=0)");
+ 	for (unsigned k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
+ 		printf("SWEET KEYS: %s gpio level %d\n", keys[k].name, sweet_gpio_get(keys[k].bank, keys[k].pin));
+ 	}

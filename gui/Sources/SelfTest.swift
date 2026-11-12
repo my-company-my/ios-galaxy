@@ -64,6 +64,10 @@ enum SelfTest {
         check(dependencies.first { $0.id == "numpy" }?.formulas.isEmpty == true && dependencies.first { $0.id == "numpy" }?.custom != nil,
               "numpy: venv install, not the brew formula")
 
+        check(Config.twrpSHA256.count == 64 && Config.twrpSHA256.allSatisfy { "0123456789abcdef".contains($0) }
+              && Config.twrpURL.hasPrefix("https://github.com/") && Config.twrpURL.hasSuffix("j7velte-%40Batuhantrkgl.img"),
+              "TWRP: checked j7velte image URL and SHA-256")
+
         // Shell.capture: status, merged stderr, a background child that keeps
         // the pipe open (like the adb server), timeout
         func capture(_ cmd: String, timeout: TimeInterval = 30) -> (Int32, String) {

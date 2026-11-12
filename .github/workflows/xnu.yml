@@ -60,6 +60,11 @@ jobs:
           python3 tools/qemu-j7.py --in-kernel
           python3 tools/qemu-j7.py --boot-mpidr 0x102
           python3 tools/qemu-j7.py --el2 --boot-mpidr 0x3 --keep qemu-out
+      - name: Shim restart without the power button in QEMU (Vol+ TWRP, Vol- Download, none)
+        run: |
+          python3 tools/qemu-j7.py --escape up
+          python3 tools/qemu-j7.py --escape down
+          python3 tools/qemu-j7.py --escape none
       - uses: actions/upload-artifact@v4
         if: always()
         with:

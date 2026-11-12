@@ -14,6 +14,14 @@ top of the framebuffer green. QEMU then dumps memory and the script checks:
     edits the test ADT instead, putting N's node first is NOT done; the
     shim must swap)
   - --el2: the shim is entered at EL2 and must drop to EL1
+  - --escape up|down|none: the power-button-free restart (shim/escape.c).
+    Builds shim/out-esc/Image with the GPIO DAT, INFORM3 and SWRESET
+    addresses in RAM (ESC_*), QEMU preloads the key level there (active
+    low; up = Volume up held, down = Volume down, none = no key) and pauses
+    on the guest's reset request instead of rebooting. Checks the restart
+    reason the shim wrote (TWRP 0x12345674, Download 0x12345671) and that
+    PSCI SYSTEM_RESET reached QEMU; with none, the normal hand-off. Always
+    at EL2 (QEMU virt only routes PSCI through SMC with virtualization=on).
   - DIR/fb.png shows the screen (needs Pillow, optional)
 Needs qemu-system-aarch64 (macOS: brew install qemu) and a built shim
 (shim/build.sh; this script reads shim/out/Image).
@@ -27,6 +35,9 @@ sys.path.insert(0, HERE)
 import adt, mkadt  # noqa: E402
 
 BOOT_LINE_LENGTH = 608
+ESC_BASE = 0x7f000000       # test build: GPA2 DAT here, INFORM3 at +0x10, SWRESET at +0x20
+ESC_KEYS = {'up': 0xfffffffe, 'down': 0xfffffffd, 'none': 0xffffffff}
+ESC_MODE = {'up': 0x12345674, 'down': 0x12345671, 'none': 0}
 VIRT_BASE = 0xfffffff006000000
 MAILBOX = 0x80000800        # inside the test kernel's segment, after its code
 
@@ -80,7 +91,18 @@ def test_payload(adt_blob):
     return hdr.ljust(data_off, b'\0') + kseg + adt_blob
 
 
-def qemu_dump(image, initrd, outdir, secs, el2=False):
+def build_escape_shim():
+    """shim/out-esc/Image: escape.c armed, its registers in RAM at ESC_BASE."""
+    env = dict(os.environ, SHIM_IMAGE_ONLY='1', SHIM_OUT='out-esc',
+               SHIM_CFLAGS=f'-DESC_FORCE -DESC_GPA2_DAT={ESC_BASE:#x}UL '
+                           f'-DESC_INFORM3={ESC_BASE + 0x10:#x}UL -DESC_SWRESET={ESC_BASE + 0x20:#x}UL')
+    subprocess.run(['bash', os.path.join(HERE, '../shim/build.sh')], env=env, check=True,
+                   stdout=subprocess.DEVNULL)
+    return os.path.join(HERE, '../shim/out-esc/Image')
+
+
+def qemu_dump(image, initrd, outdir, secs, el2=False, keys=None):
+    """Run QEMU, dump the framebuffer and kernel area; returns `info status`."""
     mon = os.path.join(tempfile.mkdtemp(prefix='qj7'), 'mon')   # short: unix socket path limit
     machine = 'virt,gic-version=2' + (',virtualization=on' if el2 else '')
     args = ['qemu-system-aarch64', '-M', machine, '-cpu', 'cortex-a53',
@@ -88,21 +110,40 @@ def qemu_dump(image, initrd, outdir, secs, el2=False):
             '-kernel', image, '-monitor', f'unix:{mon},server,nowait']
     if initrd:
         args += ['-initrd', initrd]
+    if keys is not None:
+        args += ['-device', f'loader,addr={ESC_BASE:#x},data={keys:#x},data-len=4',
+                 '-action', 'reboot=shutdown,shutdown=pause']
     q = subprocess.Popen(args)
+    status = ''
     try:
         time.sleep(secs)
         import socket
         s = socket.socket(socket.AF_UNIX)
         s.connect(mon)
+        s.settimeout(0.5)
         def cmd(c):
             s.sendall(c.encode() + b'\n')
             time.sleep(0.5)
+            got = b''
+            try:
+                while True:
+                    d = s.recv(65536)
+                    if not d:
+                        break
+                    got += d
+            except OSError:
+                pass
+            return got.decode(errors='replace')
+        status = cmd('info status')
         cmd(f'pmemsave 0x67000000 {720 * 1280 * 4} "{outdir}/fb.raw"')
         cmd(f'pmemsave 0x80000000 0x200000 "{outdir}/k.raw"')
+        if keys is not None:
+            cmd(f'pmemsave {ESC_BASE:#x} 0x40 "{outdir}/esc.raw"')
         cmd('quit')
         s.close()
     finally:
         q.wait(timeout=10)
+    return status
 
 
 def main():
@@ -112,11 +153,17 @@ def main():
     ap.add_argument('--boot-mpidr', type=lambda v: int(v, 0), default=0)
     ap.add_argument('--secs', type=float, default=3)
     ap.add_argument('--el2', action='store_true', help='enter the shim at EL2 (QEMU virtualization=on)')
+    ap.add_argument('--escape', choices=sorted(ESC_KEYS), help='test the volume-key restart (see above)')
     ap.add_argument('--keep')
     a = ap.parse_args()
     out = a.keep or tempfile.mkdtemp()
     os.makedirs(out, exist_ok=True)
     image = os.path.join(HERE, '../shim/out/Image')
+    keys = None
+    if a.escape:
+        image = build_escape_shim()
+        keys = ESC_KEYS[a.escape]
+        a.el2 = True
 
     tree = mkadt.build(seed=b'\0' * 64)
     # QEMU virt GIC/timer, but keep all eight cores to exercise the boot-core swap.
@@ -150,9 +197,9 @@ def main():
         img += b'\0' * (-len(img) % 4096) + payload
         image = os.path.join(out, 'Image+payload')
         open(image, 'wb').write(img)
-        qemu_dump(image, None, out, a.secs, a.el2)
+        status = qemu_dump(image, None, out, a.secs, a.el2, keys)
     else:
-        qemu_dump(image, pfile, out, a.secs, a.el2)
+        status = qemu_dump(image, pfile, out, a.secs, a.el2, keys)
 
     fb = open(os.path.join(out, 'fb.raw'), 'rb').read()
     k = open(os.path.join(out, 'k.raw'), 'rb').read()
@@ -170,6 +217,18 @@ def main():
         pass
     if a.payload:
         return
+    if a.escape:
+        esc = open(os.path.join(out, 'esc.raw'), 'rb').read()
+        inform3 = struct.unpack_from('<I', esc, 0x10)[0]
+        want = ESC_MODE[a.escape]
+        check(inform3 == want, f'escape {a.escape}: INFORM3 = 0x{inform3:08x} (want 0x{want:08x})')
+        line = next((l.strip() for l in status.splitlines() if 'VM status' in l), '?')
+        reset = 'shutdown' in line
+        check(reset == (a.escape != 'none'), f'escape {a.escape}: restart requested = {reset} (QEMU "{line}")')
+        if a.escape != 'none':
+            mb = MAILBOX - mkadt.PHYS_BASE
+            check(struct.unpack_from('<Q', k, mb)[0] == 0, f'escape {a.escape}: the kernel was not started')
+            sys.exit(0 if ok else 1)
     mb = MAILBOX - mkadt.PHYS_BASE
     ba, phys, video, dtp, el = struct.unpack_from('<5Q', k, mb)
     check(struct.unpack_from('<I', fb, 0)[0] == 0xff00ff00, 'test kernel ran (green band on the framebuffer)')

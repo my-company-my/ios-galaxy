@@ -66,10 +66,11 @@ struct StepBar: View {
                     .help("\(i). \(steps[i].title): \(steps[i].summary)")
                 }
             }
-            HStack(spacing: 6) {
+            HStack(spacing: 10) {
                 PhoneBadge()
+                Divider().frame(height: 16)
+                RestartBar()
                 Spacer()
-                Text("Repositorio: \(Config.repo.path)").font(.caption).foregroundColor(.secondary)
             }
         }
         .padding(.horizontal, 14)
@@ -83,19 +84,24 @@ struct PhoneBadge: View {
     var body: some View {
         HStack(spacing: 10) {
             Label {
-                Text("Teléfono: \(phone.adb.label)")
+                Text(phone.download ? "Teléfono: Download mode" : "Teléfono: \(phone.adb.label)")
             } icon: {
-                Circle().fill(color).frame(width: 9, height: 9)
+                Circle().fill(phone.download ? Color.green : color).frame(width: 9, height: 9)
             }
-            if phone.watchDownload {
-                Label {
-                    Text(phone.download ? "Download mode detectado" : "sin Download mode")
-                } icon: {
-                    Circle().fill(phone.download ? Color.green : Color.secondary.opacity(0.5)).frame(width: 9, height: 9)
-                }
-            }
+            .help(help)
         }
         .font(.callout)
+    }
+
+    var help: String {
+        switch phone.adb {
+        case .unauthorized:
+            return "En el teléfono, acepta \"Permitir depuración USB\" para este Mac."
+        case .none:
+            return phone.heimdallInstalled ? "adb no ve el teléfono y no está en Download mode." : "adb no ve el teléfono. (Download mode se detecta con Heimdall: paso 0.)"
+        default:
+            return phone.adb.label
+        }
     }
 
     var color: Color {
@@ -242,6 +248,39 @@ struct Footer: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
+    }
+}
+
+/// Restarts that need no power button: adb (Android with USB debugging,
+/// or TWRP) and, from Download mode, `heimdall print-pit` (only reads the
+/// partition table, then Heimdall restarts the phone).
+struct RestartBar: View {
+    @EnvironmentObject var phone: PhoneMonitor
+    @EnvironmentObject var runner: Runner
+
+    var body: some View {
+        let adb = phone.adb == .recovery || phone.adb == .android
+        HStack(spacing: 6) {
+            Text("Reiniciar en:").font(.callout).foregroundColor(.secondary)
+            Act(title: "TWRP", symbol: "wrench.adjustable", enabled: adb) {
+                await runner.run("Reiniciar en TWRP (adb)", "adb reboot recovery")
+            }
+            Act(title: "Download", symbol: "arrow.down.to.line", enabled: adb) {
+                await runner.run("Reiniciar en Download mode (adb)", "adb reboot download")
+            }
+            Act(title: "Android", symbol: "iphone.and.arrow.forward", enabled: adb) {
+                await runner.run("Reiniciar en Android (adb)", "adb reboot")
+            }
+            if phone.download {
+                Act(title: "Salir de Download", symbol: "arrow.uturn.backward", enabled: true) {
+                    await runner.run("Salir de Download mode (heimdall print-pit: solo lee, luego reinicia)",
+                        "echo 'Para entrar a TWRP: mantén Vol+ y Home ahora, hasta ver TWRP.'; sleep 3; heimdall print-pit 2>&1 | tail -n 4")
+                }
+            }
+        }
+        .controlSize(.small)
+        .help(adb ? "Reinicia con adb: no hace falta el botón de encendido." :
+              "adb necesita el teléfono en Android con depuración USB (aceptada en el teléfono) o en TWRP.")
     }
 }
 

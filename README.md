@@ -46,6 +46,21 @@ Todos los pasos de abajo también se hacen desde una app con un asistente de 10 
 
 **Compilarla en tu Mac** (Xcode o Command Line Tools): `gui/build-app.sh` → `gui/out/iOS Galaxy.app`.
 
+## Sin botón de encendido
+
+Todo se puede hacer sin el botón de encendido:
+
+| Desde | A TWRP | A Download mode |
+| --- | --- | --- |
+| Android (depuración USB aceptada) | app: "Reiniciar en: TWRP" (`adb reboot recovery`) | app: "Reiniciar en: Download" (`adb reboot download`) |
+| TWRP | (ya está) | app: "Reiniciar en: Download" |
+| Download mode | app: "Salir de Download" (`heimdall print-pit`: solo lee la tabla de particiones y reinicia) con **Vol+ y Home** pulsados | (ya está) |
+| Escribir TWRP con Heimdall | Heimdall reinicia solo al terminar: mantén **Vol+ y Home** | |
+| El shim en pantalla (o al arrancar) | mantén **Vol+** | mantén **Vol−** |
+| iOS corriendo (nuestro kernel) | mantén **Vol+ y Vol−** juntos 3 s (boot-arg `sweetescape=0` lo apaga) | |
+
+El shim y el kernel escriben el motivo del reinicio en el registro INFORM3 del PMU (`0x1048080c`: TWRP `0x12345674`, Download `0x12345671`, los valores de `exynos7870.dtsi` de Linux) y reinician con PSCI `SYSTEM_RESET`. Probado en QEMU (`tools/qemu-j7.py --escape up|down|none`); en el teléfono todavía no. Último recurso: el J7 Neo tiene batería removible.
+
 ## Qué necesitas
 
 - Galaxy J7 Neo **SM-J701M** con **OEM unlock** activado (Opciones de desarrollador) y "OEM LOCK: OFF" en Download mode.
@@ -63,7 +78,7 @@ Todos los pasos de abajo también se hacen desde una app con un asistente de 10 
 
 ### 0. TWRP y respaldo
 
-No hay TWRP oficial para el J7 Neo (j7velte). Uno no oficial que sirve: `TWRP-3.7.1-j7velte-@Batuhantrkgl.img` de la release [TWRP-3.7.1-Exynos7870-Stable](https://github.com/batuhantrkgl/releases/releases/tag/TWRP-3.7.1-Exynos7870-Stable) (también en [SourceForge](https://sourceforge.net/projects/batuhan-s-builds/files/TWRP-3.7.1-Exynos7870-Stable/)). SHA-256 del archivo revisado: `696cc964d70c6fdb86952b477f9afd5a2adefa3e259eea32c5df31db8f52b69f` (30 072 832 bytes). Lo que se revisó en ese archivo: `ro.product.device=j7velte`; device trees "J7VE LTE" para el chip 7870 (0x1ebe) con hw_rev 0-255; particiones en `13540000.dwmmc0/by-name` (BOOT, RECOVERY, USERDATA…); adb activado con shell root y `blockdev`/`dd`/`readlink` (lo que usa `tools/j7-flash.sh`). Sus device trees son de la variante SEA (SM-J701F); S-BOOT elige el device tree por chip y hw_rev (el port de postmarketOS probado en el SM-J701M solo da esos), así que debería arrancar en el J701M, pero eso no está probado.
+La app (paso 2) lo descarga y revisa su SHA-256 sola ("Descargar TWRP verificado"). No hay TWRP oficial para el J7 Neo (j7velte). Uno no oficial que sirve: `TWRP-3.7.1-j7velte-@Batuhantrkgl.img` de la release [TWRP-3.7.1-Exynos7870-Stable](https://github.com/batuhantrkgl/releases/releases/tag/TWRP-3.7.1-Exynos7870-Stable) (también en [SourceForge](https://sourceforge.net/projects/batuhan-s-builds/files/TWRP-3.7.1-Exynos7870-Stable/)). SHA-256 del archivo revisado: `696cc964d70c6fdb86952b477f9afd5a2adefa3e259eea32c5df31db8f52b69f` (30 072 832 bytes). Lo que se revisó en ese archivo: `ro.product.device=j7velte`; device trees "J7VE LTE" para el chip 7870 (0x1ebe) con hw_rev 0-255; particiones en `13540000.dwmmc0/by-name` (BOOT, RECOVERY, USERDATA…); adb activado con shell root y `blockdev`/`dd`/`readlink` (lo que usa `tools/j7-flash.sh`). Sus device trees son de la variante SEA (SM-J701F); S-BOOT elige el device tree por chip y hw_rev (el port de postmarketOS probado en el SM-J701M solo da esos), así que debería arrancar en el J701M, pero eso no está probado.
 
 ```sh
 heimdall flash --RECOVERY twrp-j7velte.img --no-reboot   # desde Download mode (Vol- + Home + Power)
@@ -155,6 +170,7 @@ Flashea el firmware oficial de Samsung con Odin, o `tools/j7-flash.sh boot backu
 | `sweettouch=0`, `sweettouchpoll=1` | sin touch / leer el touch sin mirar su línea de interrupción |
 | `sweetkeys=0`, `sweettouchkeys=0` | sin botones / sin touchkeys |
 | `sweetbattery=0` | batería fija 100 % |
+| `sweetescape=0` | sin el reinicio a TWRP con Vol+ y Vol− (3 s) |
 | `sweetusb=0`, `sweetusblog=0` | sin USB / sin log en vivo |
 | `sweetlog=0`, `mmclogsecs=N` | sin log persistente / cada cuántos segundos se escribe |
 
@@ -173,6 +189,6 @@ python3 tools/validate-repo.py
 | --- | --- |
 | `shim/` | cargador bare-metal (C + asm) que S-BOOT arranca como kernel |
 | `xnu/patches/0001-0081` | port original (Redmi), genérico de iOS en su mayoría |
-| `xnu/patches/0082-0088` | J7 Neo: CPU/GIC/páginas 4K, emulación LSE, eMMC, GPIO/I2C/touch/botones/batería, pantalla iPhone 8, USB; compatibilidad con el iig de Xcode 16 |
+| `xnu/patches/0082-0089` | J7 Neo: CPU/GIC/páginas 4K, emulación LSE, eMMC, GPIO/I2C/touch/botones/batería, pantalla iPhone 8, USB; compatibilidad con el iig de Xcode 16; reinicio a TWRP con los botones de volumen |
 | `tools/` | ADT, payload, boot.img, imagen raíz, flasheo, logs, pruebas |
 | `docs/` | notas y README del port original al Redmi |

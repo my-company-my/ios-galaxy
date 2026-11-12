@@ -37,23 +37,28 @@ for t in "$CC" ld.lld llvm-objcopy llvm-nm llvm-readelf; do
 	command -v "$t" >/dev/null || { echo "error: $t not found (macOS: brew install llvm lld)" >&2; exit 1; }
 done
 
-CFLAGS="--target=aarch64-none-elf -O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only -mstrict-align -fno-stack-protector -Wall -Wextra"
-SRCS="start.S shim.c console.c fdt.c loader.c"
-mkdir -p out
+# SHIM_CFLAGS: extra defines (the QEMU escape test points escape.c at RAM);
+# SHIM_OUT: output directory (default out), so a test build keeps out/ intact.
+CFLAGS="--target=aarch64-none-elf -O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only -mstrict-align -fno-stack-protector -Wall -Wextra ${SHIM_CFLAGS:-}"
+OUT=${SHIM_OUT:-out}
+SRCS="start.S shim.c console.c fdt.c loader.c escape.c"
+mkdir -p "$OUT"
 OBJS=""
+COBJS=""
 for f in $SRCS; do
-	"$CC" $CFLAGS -c "$f" -o "out/${f%.*}.o"
-	OBJS="$OBJS out/${f%.*}.o"
+	"$CC" $CFLAGS -c "$f" -o "$OUT/${f%.*}.o"
+	OBJS="$OBJS $OUT/${f%.*}.o"
+	case $f in *.c) COBJS="$COBJS $OUT/${f%.*}.o" ;; esac
 done
 # The image runs wherever S-BOOT puts it with no relocation pass: only the
 # header's image_size (start.o, linked at 0) may be an absolute address.
-abs=$(llvm-readelf -r out/shim.o out/console.o out/fdt.o out/loader.o | grep -c ABS64 || true)
+abs=$(llvm-readelf -r $COBJS | grep -c ABS64 || true)
 [ "$abs" = 0 ] || { echo "error: $abs absolute relocations in C objects" >&2; exit 1; }
-ld.lld -T shim.ld --build-id=none -N -static $OBJS -o out/shim.elf
-llvm-objcopy -O binary out/shim.elf out/Image
+ld.lld -T shim.ld --build-id=none -N -static $OBJS -o "$OUT/shim.elf"
+llvm-objcopy -O binary "$OUT/shim.elf" "$OUT/Image"
 # Pad to image_size so .bss/stacks exist as zeroed bytes.
-size=$(llvm-nm out/shim.elf | awk '$3=="_end"{print $1}')
-python3 - out/Image "$size" <<'PY'
+size=$(llvm-nm "$OUT/shim.elf" | awk '$3=="_end"{print $1}')
+python3 - "$OUT/Image" "$size" <<'PY'
 import sys
 path, size = sys.argv[1], int(sys.argv[2], 16)
 data = open(path, 'rb').read()
@@ -65,7 +70,7 @@ RAMDISK_ARGS=(--empty-ramdisk)
 if [ -n "$PAYLOAD" ]; then
 	if [ "$IN_KERNEL" = 1 ]; then
 		# Behind the padded Image, 4 KiB aligned (loader.c find_payload).
-		python3 - out/Image "$PAYLOAD" <<'PY'
+		python3 - "$OUT/Image" "$PAYLOAD" <<'PY'
 import sys
 img, payload = sys.argv[1], sys.argv[2]
 data = open(img, 'rb').read()
@@ -77,16 +82,16 @@ PY
 	fi
 fi
 if [ -f ../dtb/stock-boot.img ]; then
-	python3 ../tools/mkbootimg_samsung.py --stock ../dtb/stock-boot.img --kernel out/Image \
-		"${RAMDISK_ARGS[@]}" -o out/shim-boot.img
+	python3 ../tools/mkbootimg_samsung.py --stock ../dtb/stock-boot.img --kernel "$OUT/Image" \
+		"${RAMDISK_ARGS[@]}" -o "$OUT/shim-boot.img"
 elif [ "${SHIM_IMAGE_ONLY:-0}" = 1 ]; then
-	echo "SHIM_IMAGE_ONLY=1: out/Image only (no dtb/stock-boot.img)"
+	echo "SHIM_IMAGE_ONLY=1: $OUT/Image only (no dtb/stock-boot.img)"
 else
 	echo "error: dtb/stock-boot.img missing (copy of the phone's BOOT partition; tools/j7-flash.sh backup)" >&2
 	exit 1
 fi
 # Host render of the console layout (any C compiler for the host).
-if command -v cc >/dev/null; then
+if [ "$OUT" = out ] && command -v cc >/dev/null; then
 	cc -O1 -Wall -o out/host_test console.c host_test.c && ./out/host_test
 fi
-ls -l out/Image out/shim-boot.img 2>/dev/null || ls -l out/Image
+ls -l "$OUT/Image" "$OUT/shim-boot.img" 2>/dev/null || ls -l "$OUT/Image"

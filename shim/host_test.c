@@ -19,7 +19,8 @@ int main(void)
 	con_str("PANIC", "SYNC");
 	con_hex("ESR", 0x96000010);
 	con_skip();
-	con_str("HALT", "hold Power + Vol down to restart");
+	con_str("HALT", "stopped");
+	con_str("KEYS", "hold Vol+ = TWRP, Vol- = Download");
 	FILE *f = fopen("out/host.ppm", "wb");
 	fprintf(f, "P6 %d %d 255\n", FB_W, FB_H);
 	for (int i = 0; i < FB_W * FB_H; i++) {

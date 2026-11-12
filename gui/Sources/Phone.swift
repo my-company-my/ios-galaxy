@@ -44,7 +44,9 @@ final class PhoneMonitor: ObservableObject, @unchecked Sendable {
     @Published private(set) var adb: AdbState = .none
     @Published private(set) var download = false
     @Published private(set) var heimdallInstalled = false
-    @Published var watchDownload = false
+    /// Download mode is polled all the time: the restart bar shows it and
+    /// offers "Salir de Download" (the user's power button is broken).
+    @Published var watchDownload = true
     weak var runner: Runner?
 
     private var timer: Timer?
