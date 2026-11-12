@@ -1,6 +1,6 @@
 # iOS 16 on the Galaxy J7 Neo (SM-J701M, Exynos 7870) - working notes
 
-## Status (2026-11-11)
+## Status (2026-11-12)
 
 - Ported from dipa-studio/ios-sweet (Redmi Note 10 Pro, reached the iOS home
   screen). Nothing of the J7 port has run on the phone yet.
@@ -53,7 +53,14 @@
     osfmk/arm64/corecrypto/sha256_compress_arm64.s; K256[57] = 0x78a5636f
     matches the LSE pattern. Data, never executed: CI passes
     --ignore-symbol K256 (the hit is still printed).
-  Not yet seen: a CI run with the firehose fix.
+- Run 43123698894 (4613792): all jobs pass. Verify: "all 88 patches
+  applied"; 8945 KiB of code in 4 instruction sections, 70686 symbols
+  (the same symbol count as the previous run, so the firehose functions
+  are still linked); "ignored (--ignore-symbol): 1 lse-rmw in K256"; "no
+  post-ARMv8.0 encodings found". The kernel to test on the phone is the
+  xnu-kernel artifact of this run. Limits of this check: it matches the
+  encodings listed in check-armv80.py (LSE, LDAPR/LDAPUR, FJCVTZS, dotprod,
+  RDM, FP16, PAN/UAO/DIT/SSBS); it is not a full disassembly.
 - check-armv80.py now reads every instruction section (S_ATTR_*_INSTRUCTIONS:
   __commpage_text, __KLD...), detects MSR/MRS of PAN, UAO, DIT, SSBS, names
   the function of each hit and has a --min-code-kib guard (CI: 4096).
@@ -107,9 +114,8 @@
 
 ## Next action
 
-1. CI run with the firehose fix: the Verify step must report no
-   post-ARMv8.0 encodings in >= 4 MiB of code (K256 ignored).
-2. User: back up the phone (tools/j7-flash.sh backup), build the boot
+1. User: back up the phone (tools/j7-flash.sh backup), build the boot
    image with an empty ramdisk first (shim/build.sh) and check the shim
    screen (CPU line, INITRD line).
-3. Then the full boot with cpus=1, read the log with tools/sweet-log-pull.sh.
+2. Then the full boot with cpus=1 (kernel: xnu-kernel artifact of run
+   43123698894), read the log with tools/sweet-log-pull.sh.

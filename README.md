@@ -4,7 +4,7 @@
 
 Este repo es una modificación de [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet), que porta el kernel XNU de Apple (xnu-8796, generación iOS 16) al Redmi Note 10 Pro y llega a la pantalla de inicio de iOS. Aquí el mismo kernel apunta al J7 Neo, y todos los pasos del host funcionan en macOS (Apple Silicon o Intel). Linux ya no es necesario.
 
-> **Estado:** NO probado en el teléfono. El kernel compila en GitHub Actions; la primera versión tenía instrucciones ARMv8.1 que el A53 no tiene, la corrección está en prueba (ver `NOTES.md`). El shim (el cargador que arranca S-BOOT) sí está probado en QEMU. Experimental: borra los datos de Android del teléfono.
+> **Estado:** NO probado en el teléfono. El kernel compila en GitHub Actions y la CI revisa que solo use instrucciones ARMv8.0 (las que tiene el Cortex-A53; ver `NOTES.md`). El shim (el cargador que arranca S-BOOT) sí está probado en QEMU. Experimental: borra los datos de Android del teléfono.
 
 ## Qué cambia respecto al original
 
