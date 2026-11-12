@@ -115,6 +115,27 @@
   the administrator dialog path, the TWRP .tar extraction with a real
   Samsung tar.
 
+## TWRP for the J7 Neo (2026-11-12)
+
+- No official TWRP for j7velte (twrp.me has j7elte = J700, j7xelte = J710).
+- Checked image: TWRP-3.7.1-j7velte-@Batuhantrkgl.img from GitHub
+  batuhantrkgl/releases tag TWRP-3.7.1-Exynos7870-Stable, SHA-256
+  696cc964d70c6fdb86952b477f9afd5a2adefa3e259eea32c5df31db8f52b69f,
+  30072832 bytes. Header v0, page 2048, kernel 0x10008000, ramdisk
+  0x11000000 (LZMA cpio), dt.img = Samsung DTBH v2 with 3 DTBs "samsung,
+  J7VE LTE SEA OPEN 00/01/02A", chip 0x1ebe, platform 0x50a6, subtype
+  0x217584da, hw_rev 0-0 / 1-2 / 3-255. prop.default: ro.product.device=
+  j7velte, model "Samsung Galaxy J7 Nxt", built 2024-03-01; binary version
+  string 3.7.0_9-0. recovery.fstab: 13540000.dwmmc0/by-name BOOT,
+  RECOVERY, USERDATA, EFS, RADIO... adb on, ro.secure=0, toybox blockdev/
+  readlink/tr, dd, sh: what tools/j7-flash.sh needs.
+- Guess, not verified: S-BOOT of the J701M (LTN variant) accepts these SEA
+  DTBs, because it selects by chip/hw_rev (the pmOS port tested on the
+  SM-J701M gives only model_info-chip = 7870 and hw_rev 0-255).
+- tools/mkbootimg_samsung.py no longer warns on DTBH (the Exynos dt.img
+  format; the warning came from the Qualcomm Redmi port). Building with
+  the TWRP image as stock copies its dt.img unchanged.
+
 ## Decisions taken with the user
 
 - Identity iPhone 8 (iPhone10,4 / D201AP), 750x1334 @2x scaled to 720x1280

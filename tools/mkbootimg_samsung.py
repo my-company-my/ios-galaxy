@@ -9,7 +9,8 @@ Layout (Exynos 7870 boot images; osm0sis mkbootimg --dt):
     "ANDROID!", kernel_size, kernel_addr, ramdisk_size, ramdisk_addr,
     second_size, second_addr, tags_addr, page_size, dt_size, os_version,
     name[16], cmdline[512], id[32], extra_cmdline[1024]
-  then kernel, ramdisk, second and dt.img, each padded to page_size,
+  then kernel, ramdisk, second and dt.img (Exynos: Samsung "DTBH" table),
+  each padded to page_size,
   then the "SEANDROIDENFORCE" tag Samsung appends.
 
 Everything but kernel and ramdisk (addresses, page size, os_version, board
@@ -44,9 +45,11 @@ def parse(buf):
         size = h[name + '_size']
         sections[name] = buf[off:off + size]
         off += pad(size, page)
-    if h['dt_size'] and sections['dt'][:4] not in (b'QCDT', b'\xd0\x0d\xfe\xed'):
+    # Exynos (J7 Neo): Samsung "DTBH" table of DTBs (checked on a j7velte TWRP
+    # image: 3 entries, chip 0x1ebe = 7870, hw_rev 0-255); QCDT is Qualcomm.
+    if h['dt_size'] and sections['dt'][:4] not in (b'DTBH', b'QCDT', b'\xd0\x0d\xfe\xed'):
         # A header v1+ image would have header_version (small) here, not a dt size.
-        print(f'warning: dt section starts with {sections["dt"][:4]!r}, not QCDT or a DTB',
+        print(f'warning: dt section starts with {sections["dt"][:4]!r}, not DTBH, QCDT or a DTB',
               file=sys.stderr)
     return h, sections
 

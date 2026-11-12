@@ -63,6 +63,8 @@ Todos los pasos de abajo también se hacen desde una app con un asistente de 10 
 
 ### 0. TWRP y respaldo
 
+No hay TWRP oficial para el J7 Neo (j7velte). Uno no oficial que sirve: `TWRP-3.7.1-j7velte-@Batuhantrkgl.img` de la release [TWRP-3.7.1-Exynos7870-Stable](https://github.com/batuhantrkgl/releases/releases/tag/TWRP-3.7.1-Exynos7870-Stable) (también en [SourceForge](https://sourceforge.net/projects/batuhan-s-builds/files/TWRP-3.7.1-Exynos7870-Stable/)). SHA-256 del archivo revisado: `696cc964d70c6fdb86952b477f9afd5a2adefa3e259eea32c5df31db8f52b69f` (30 072 832 bytes). Lo que se revisó en ese archivo: `ro.product.device=j7velte`; device trees "J7VE LTE" para el chip 7870 (0x1ebe) con hw_rev 0-255; particiones en `13540000.dwmmc0/by-name` (BOOT, RECOVERY, USERDATA…); adb activado con shell root y `blockdev`/`dd`/`readlink` (lo que usa `tools/j7-flash.sh`). Sus device trees son de la variante SEA (SM-J701F); S-BOOT elige el device tree por chip y hw_rev (el port de postmarketOS probado en el SM-J701M solo da esos), así que debería arrancar en el J701M, pero eso no está probado.
+
 ```sh
 heimdall flash --RECOVERY twrp-j7velte.img --no-reboot   # desde Download mode (Vol- + Home + Power)
 # arrancar TWRP: Vol+ + Home + Power
