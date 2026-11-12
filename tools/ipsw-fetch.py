@@ -73,6 +73,8 @@ def cmd_list(args):
 
 
 def cmd_fetch(args):
+    if not shutil.which('lzfse'):
+        sys.exit('needs lzfse to unpack the DeviceTree (macOS: brew install lzfse)')
     fw = find_build(args.build)
     out = os.path.abspath(args.out or os.path.join(IPSW_DIR, fw['buildid']))
     os.makedirs(out, exist_ok=True)

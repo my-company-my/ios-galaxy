@@ -69,6 +69,37 @@
 - NOT verified: nothing has run on the phone. Nothing of the hardware
   drivers has run on hardware.
 
+## Mac app "iOS Galaxy" (gui/, 2026-11-12)
+
+- SwiftUI wizard over the existing scripts, 10 steps (Herramientas,
+  Repositorio, TWRP, Respaldo, Prueba del shim, Kernel, iOS, Imagen raíz,
+  Arranque completo, Logs). Decisions with the user: SwiftUI, Spanish,
+  wizard with free navigation and saved checkmarks, the app clones the
+  work branch into ~/ios-galaxy, tools checked + installed with Homebrew,
+  Heimdall built from source (Grimler v2.2.2, pinned commit), typed
+  confirmation with the partition name (RECOVERY / BOOT / ERASE), phone
+  state polled every 2 s and buttons disabled with the keys to press,
+  backups in ~/Documents/iOS Galaxy/backups/<date>, administrator steps
+  through the macOS password dialog, IPSW: only the needed parts, version
+  chosen from a list; one "latest" release with the kernel and the app;
+  macOS 13+ (chosen by me; the user's Mac has macOS 27).
+- Helpers: tools/ipsw-fetch.py (list/fetch/check), tools/heimdall-build.sh,
+  sweet-usbnet.sh --wait/--listen (only ifconfig needs root).
+- Verified here (Linux): ipsw-fetch.py against the real ipsw.me API and
+  Apple's IPSW (32 iOS 16 builds; BuildManifest of 16.0, 16.4, 16.7.16 all
+  have d201ap/Erase OS + Cryptex1,SystemOS + Cryptex1,AppOS; DeviceTree
+  download -> d201ap.adt 'D201AP|iPhone10,4', mkadt.py accepts it; the
+  disk check stops before any image download); heimdall-build.sh builds
+  v2.2.2 (also re-run, path with spaces), `heimdall detect` exits 1 with
+  no phone and only lists USB devices (source read); usbnet --listen
+  receives UDP lines, --wait waits and prints the interface (fake `ip`).
+  The app's Swift code cannot be compiled here (no Swift on this Linux):
+  the CI app job builds it on macos-15, runs --selftest and takes a PNG of
+  every step (capturas.zip in the release).
+- Not verified: the app with a real phone (adb/Heimdall states, flashing),
+  the administrator dialog path, the TWRP .tar extraction with a real
+  Samsung tar.
+
 ## Decisions taken with the user
 
 - Identity iPhone 8 (iPhone10,4 / D201AP), 750x1334 @2x scaled to 720x1280

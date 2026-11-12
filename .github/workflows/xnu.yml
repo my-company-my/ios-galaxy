@@ -196,6 +196,7 @@ jobs:
           "$RUNNER_TEMP/support/bin/heimdall" detect && exit 1 || echo "detect without a phone: exit $? (expected 1)"
       - name: IPSW helper (version list, DeviceTree-only download)
         run: |
+          brew install lzfse
           python3 tools/ipsw-fetch.py list | head -5
           python3 tools/ipsw-fetch.py fetch 20H392 --devicetree-only --out "$RUNNER_TEMP/ipsw"
           python3 tools/mkadt.py "$RUNNER_TEMP/j7neo.adt"

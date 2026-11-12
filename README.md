@@ -21,6 +21,31 @@ Este repo es una modificación de [dipa-studio/ios-sweet](https://github.com/dip
 | Batería | fija 100 % | medidor S2MU005 (lectura real, solo lectura) |
 | USB | DWC3 Qualcomm | DWC3 Exynos + PHY + switch MUIC: red USB (CDC ECM) y log en vivo |
 
+## App para Mac: iOS Galaxy
+
+Todos los pasos de abajo también se hacen desde una app con un asistente de 10 pasos (`gui/`, SwiftUI, macOS 13 o más nuevo, Apple Silicon e Intel):
+
+| Paso | Qué hace |
+| --- | --- |
+| 0 Herramientas | revisa adb, LLVM/lld, Python + numpy, lzfse, rsync 3, Heimdall… e instala lo que falta con Homebrew (Heimdall se compila: `tools/heimdall-build.sh`) |
+| 1 Repositorio | clona este repo en `~/ios-galaxy` o hace `git pull` |
+| 2 TWRP | escribe una imagen de TWRP que eliges en RECOVERY con Heimdall (Download mode) |
+| 3 Respaldo | `tools/j7-flash.sh backup` a `~/Documents/iOS Galaxy/backups/<fecha>` y copia BOOT.img a `dtb/stock-boot.img` |
+| 4 Prueba del shim | imagen con ramdisk vacío, escribirla en BOOT, reiniciar |
+| 5 Kernel | descarga el kernel de la release `latest` y revisa su SHA-256 |
+| 6 iOS | lista de iOS 16 para iPhone10,4; descarga solo OS, SystemOS, AppOS y el DeviceTree (`tools/ipsw-fetch.py`); revisa el shared cache |
+| 7 Imagen raíz | `tools/mkiosroot.sh` (contraseña de administrador) y escritura en USERDATA |
+| 8 Arranque completo | `tools/j7-make-boot.sh` con cpus, payload en el kernel y boot-args; escritura en BOOT |
+| 9 Logs | log del kernel desde TWRP, o en vivo por USB |
+
+- Cada escritura en el teléfono pide escribir el nombre: `RECOVERY`, `BOOT` o `ERASE` (USERDATA).
+- El estado del teléfono (TWRP/adb, Android, Download mode) se revisa cada 2 s; los botones que necesitan otro modo se desactivan y la app muestra las teclas.
+- Puedes ir a cualquier paso; los hechos quedan marcados.
+
+**Descargar:** `iOS-Galaxy.app.zip` de la [release `latest`](https://github.com/my-company-my/ios-galaxy/releases/tag/latest) (la CI la reemplaza en cada ejecución que pasa, junto con el kernel). La app está firmada ad hoc, no por un desarrollador de Apple: la primera vez macOS la bloquea. Ábrela una vez, luego **Ajustes del Sistema › Privacidad y seguridad › Abrir de todos modos**. O en Terminal: `xattr -dr com.apple.quarantine "/Applications/iOS Galaxy.app"`.
+
+**Compilarla en tu Mac** (Xcode o Command Line Tools): `gui/build-app.sh` → `gui/out/iOS Galaxy.app`.
+
 ## Qué necesitas
 
 - Galaxy J7 Neo **SM-J701M** con **OEM unlock** activado (Opciones de desarrollador) y "OEM LOCK: OFF" en Download mode.
