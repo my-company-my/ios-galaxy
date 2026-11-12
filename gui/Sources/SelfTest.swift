@@ -56,8 +56,11 @@ enum SelfTest {
         check(Config.path.hasPrefix(Config.venv.appendingPathComponent("bin").path + ":" + Config.support.appendingPathComponent("bin").path + ":")
               && Config.path.contains("/opt/homebrew/bin"),
               "PATH: app venv first, then app bin (Heimdall), then Homebrew")
-        check(Config.environment["HOMEBREW_NO_INSTALL_CLEANUP"] == "1" && Config.environment["HOMEBREW_NO_AUTO_UPDATE"] == nil,
-              "brew: no cleanup, auto-update kept (user's choices)")
+        // auto-update: the app leaves it as it finds it (CI runners set
+        // HOMEBREW_NO_AUTO_UPDATE=1 for every process; a Finder app does not)
+        check(Config.environment["HOMEBREW_NO_INSTALL_CLEANUP"] == "1"
+              && Config.environment["HOMEBREW_NO_AUTO_UPDATE"] == ProcessInfo.processInfo.environment["HOMEBREW_NO_AUTO_UPDATE"],
+              "brew: no cleanup; auto-update not changed by the app (user's choices)")
         check(dependencies.first { $0.id == "numpy" }?.formulas.isEmpty == true && dependencies.first { $0.id == "numpy" }?.custom != nil,
               "numpy: venv install, not the brew formula")
 
@@ -77,8 +80,9 @@ enum SelfTest {
         let (rc1, o1) = capture("echo out; echo err >&2; exit 4")
         check(rc1 == 4 && o1.contains("out") && o1.contains("err"), "capture: exit status and stderr")
         var t0 = Date()
-        let (rc2, o2) = capture("(sleep 20 &); echo started")
+        let (rc2, o2) = capture("(sleep 19.7 &); echo started")
         check(rc2 == 0 && o2.contains("started") && Date().timeIntervalSince(t0) < 5, "capture: returns while a child keeps the pipe open")
+        _ = capture("pkill -f 'sleep 19.7' || true")
         t0 = Date()
         let (_, _) = capture("sleep 20", timeout: 1)
         check(Date().timeIntervalSince(t0) < 5, "capture: timeout stops the command")
