@@ -53,8 +53,13 @@ enum SelfTest {
         check(steps.count == 10, "10 wizard steps")
         check(WriteTarget.recovery.rawValue == "RECOVERY" && WriteTarget.boot.rawValue == "BOOT" && WriteTarget.userdata.rawValue == "ERASE",
               "typed words: RECOVERY, BOOT, ERASE")
-        check(Config.path.hasPrefix(Config.support.appendingPathComponent("bin").path) && Config.path.contains("/opt/homebrew/bin"),
-              "PATH: app bin (Heimdall) and Homebrew")
+        check(Config.path.hasPrefix(Config.venv.appendingPathComponent("bin").path + ":" + Config.support.appendingPathComponent("bin").path + ":")
+              && Config.path.contains("/opt/homebrew/bin"),
+              "PATH: app venv first, then app bin (Heimdall), then Homebrew")
+        check(Config.environment["HOMEBREW_NO_INSTALL_CLEANUP"] == "1" && Config.environment["HOMEBREW_NO_AUTO_UPDATE"] == nil,
+              "brew: no cleanup, auto-update kept (user's choices)")
+        check(dependencies.first { $0.id == "numpy" }?.formulas.isEmpty == true && dependencies.first { $0.id == "numpy" }?.custom != nil,
+              "numpy: venv install, not the brew formula")
 
         // Shell.capture: status, merged stderr, a background child that keeps
         // the pipe open (like the adb server), timeout

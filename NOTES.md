@@ -111,6 +111,19 @@
   by itself ("snapshots done", no kill); window 1100x900 by default (the
   CI screen is 1024x768, so captures are 1024x681); the release "latest"
   is from this run.
+- First real use (user's Mac, macOS 27 "Golden Gate"): "Instalar lo que
+  falta" ran `brew install numpy llvm lld lzfse rsync && brew install
+  --cask android-platform-tools`. llvm/lld/lzfse/rsync installed; numpy
+  installed but not linked (/opt/homebrew/bin/f2py and numpy-config
+  already existed, likely from an old pip install for another Python),
+  brew exited 1 and the && skipped the adb cask. Also brew auto-updated
+  (llvm 22 -> 23) and ran its cleanup. Fixes, decided with the user:
+  numpy in the app's own venv (Application Support/iOS Galaxy/venv, first
+  in PATH, created from Homebrew's python3; numpy 2.5.4 has cp315 arm64
+  wheels), HOMEBREW_NO_INSTALL_CLEANUP=1, auto-update kept; formulas,
+  casks and the venv are separate commands and the result is the check
+  afterwards. The venv bash was run here exactly as the app builds it:
+  fresh, existing and broken venv, path with spaces.
 - Not verified: the app with a real phone (adb/Heimdall states, flashing),
   the administrator dialog path, the TWRP .tar extraction with a real
   Samsung tar.

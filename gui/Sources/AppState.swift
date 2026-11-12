@@ -41,6 +41,27 @@ struct Dependency: Identifiable {
     let check: String
     let formulas: [String]
     let casks: [String]
+    /// bash that installs it when it is not a Homebrew formula or cask
+    var custom: String? = nil
+}
+
+/// Homebrew's python3 (Apple Silicon, then Intel), not the venv's.
+let brewPython = "py=; for p in /opt/homebrew/bin/python3 /usr/local/bin/python3; do [ -x \"$p\" ] && { py=$p; break; }; done"
+
+/// numpy in the app's venv: create it from Homebrew's Python when it is
+/// missing or broken (e.g. that Python version was removed), then pip.
+var numpyInstall: String {
+    let v = sq(Config.venv.path)
+    return """
+    \(brewPython)
+    if [ -z "$py" ]; then echo "falta Python 3 de Homebrew (brew install python)"; exit 1; fi
+    if ! \(v)/bin/python3 -c '' 2>/dev/null; then
+      echo "creando el venv de la app con $py"
+      mkdir -p \(sq(Config.support.path)) && "$py" -m venv --clear \(v) || exit 1
+    fi
+    \(v)/bin/python3 -m pip install --disable-pip-version-check numpy || exit 1
+    \(v)/bin/python3 -c 'import numpy, sys; print("numpy", numpy.__version__, "para Python", sys.version.split()[0], "en", numpy.__file__)'
+    """
 }
 
 let dependencies: [Dependency] = [
@@ -48,11 +69,12 @@ let dependencies: [Dependency] = [
                check: "xcode-select -p >/dev/null 2>&1", formulas: [], casks: []),
     Dependency(id: "brew", name: "Homebrew", detail: "instala lo demás",
                check: "command -v brew >/dev/null", formulas: [], casks: []),
-    Dependency(id: "python", name: "Python 3 (Homebrew)", detail: "scripts de tools/",
-               check: "p=$(command -v python3) && case \"$p\" in /opt/homebrew/*|/usr/local/*) true;; *) false;; esac",
+    Dependency(id: "python", name: "Python 3 (Homebrew)", detail: "base del venv de la app",
+               check: brewPython + "; [ -n \"$py\" ]",
                formulas: ["python"], casks: []),
-    Dependency(id: "numpy", name: "numpy", detail: "revisión de instrucciones ARMv8.0",
-               check: "python3 -c 'import numpy' 2>/dev/null", formulas: ["numpy"], casks: []),
+    Dependency(id: "numpy", name: "numpy", detail: "en el venv de la app (Application Support/iOS Galaxy/venv)",
+               check: "\(sq(Config.venv.path))/bin/python3 -c 'import numpy' 2>/dev/null", formulas: [], casks: [],
+               custom: numpyInstall),
     Dependency(id: "adb", name: "adb", detail: "TWRP: respaldo, escritura, logs",
                check: "command -v adb >/dev/null", formulas: [], casks: ["android-platform-tools"]),
     Dependency(id: "llvm", name: "LLVM + lld", detail: "compila el shim",
@@ -146,37 +168,55 @@ final class AppState: ObservableObject, @unchecked Sendable {
     var missingDeps: [Dependency] { dependencies.filter { depStatus[$0.id] == false } }
 
     func checkDeps() {
-        onMain { self.checkingDeps = true }
-        Task {
-            var r: [String: Bool] = [:]
-            for d in dependencies {
-                let (rc, _) = await Shell.capture(d.check, timeout: 20)
-                r[d.id] = rc == 0
-            }
-            onMain {
-                self.depStatus = r
-                self.checkingDeps = false
-                if dependencies.allSatisfy({ r[$0.id] == true }) { self.setDone(0) }
-            }
-        }
+        Task { _ = await refreshDeps() }
     }
 
-    /// One `brew install` for every missing formula and cask; Heimdall is
-    /// built afterwards when the repo is there (its build script is in it).
+    @discardableResult
+    func refreshDeps() async -> [String: Bool] {
+        onMain { self.checkingDeps = true }
+        var r: [String: Bool] = [:]
+        for d in dependencies {
+            let (rc, _) = await Shell.capture(d.check, timeout: 20)
+            r[d.id] = rc == 0
+        }
+        let result = r
+        onMain {
+            self.depStatus = result
+            self.checkingDeps = false
+            if dependencies.allSatisfy({ result[$0.id] == true }) { self.setDone(0) }
+        }
+        return result
+    }
+
+    /// Formulas, casks and the venv are installed by separate commands: brew
+    /// can end with an error for unrelated reasons (a formula that cannot be
+    /// linked, an untrusted tap) after installing the rest. What counts is
+    /// the check afterwards.
     func installMissing() async {
         let missing = missingDeps
         let formulas = missing.flatMap(\.formulas)
         let casks = missing.flatMap(\.casks)
-        var cmds: [String] = []
-        if !formulas.isEmpty { cmds.append("brew install " + formulas.map(sq).joined(separator: " ")) }
-        if !casks.isEmpty { cmds.append("brew install --cask " + casks.map(sq).joined(separator: " ")) }
-        if !cmds.isEmpty {
-            await runner.run("Instalar con Homebrew", cmds.joined(separator: " && "))
+        if !formulas.isEmpty {
+            await runner.run("Instalar con Homebrew: " + formulas.joined(separator: ", "),
+                             "brew install " + formulas.map(sq).joined(separator: " "))
+        }
+        if !casks.isEmpty {
+            await runner.run("Instalar con Homebrew (cask): " + casks.joined(separator: ", "),
+                             "brew install --cask " + casks.map(sq).joined(separator: " "))
+        }
+        for d in missing {
+            if let cmd = d.custom { await runner.run("Instalar \(d.name)", cmd) }
         }
         if missing.contains(where: { $0.id == "heimdall" }) && repoExists {
-            await buildHeimdall()
+            await runner.run("Compilar Heimdall", "bash tools/heimdall-build.sh \(sq(Config.support.path))", cwd: Config.repo)
         }
-        checkDeps()
+        let r = await refreshDeps()
+        let still = dependencies.filter { r[$0.id] != true }.map(\.name)
+        if still.isEmpty {
+            runner.log("✔ Revisión final: todas las herramientas están instaladas.", .ok)
+        } else {
+            runner.log("✘ Revisión final: siguen faltando \(still.joined(separator: ", ")). Mira la salida de arriba.", .error)
+        }
     }
 
     func buildHeimdall() async {

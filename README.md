@@ -27,7 +27,7 @@ Todos los pasos de abajo también se hacen desde una app con un asistente de 10 
 
 | Paso | Qué hace |
 | --- | --- |
-| 0 Herramientas | revisa adb, LLVM/lld, Python + numpy, lzfse, rsync 3, Heimdall… e instala lo que falta con Homebrew (Heimdall se compila: `tools/heimdall-build.sh`) |
+| 0 Herramientas | revisa adb, LLVM/lld, Python, lzfse, rsync 3, Heimdall… e instala lo que falta con Homebrew (sin `brew cleanup`); numpy va en un venv propio de la app (`~/Library/Application Support/iOS Galaxy/venv`); Heimdall se compila (`tools/heimdall-build.sh`) |
 | 1 Repositorio | clona este repo en `~/ios-galaxy` o hace `git pull` |
 | 2 TWRP | escribe una imagen de TWRP que eliges en RECOVERY con Heimdall (Download mode) |
 | 3 Respaldo | `tools/j7-flash.sh backup` a `~/Documents/iOS Galaxy/backups/<fecha>` y copia BOOT.img a `dtb/stock-boot.img` |

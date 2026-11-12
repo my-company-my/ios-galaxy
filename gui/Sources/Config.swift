@@ -24,6 +24,9 @@ enum Config {
     static var logs: URL { documents.appendingPathComponent("logs") }
     /// Heimdall (built by tools/heimdall-build.sh) lives here.
     static var support: URL { home.appendingPathComponent("Library/Application Support/iOS Galaxy") }
+    /// The app's own Python (venv with numpy), first in PATH: the repo's
+    /// python3 scripts run with it, and nothing else on the Mac changes.
+    static var venv: URL { support.appendingPathComponent("venv") }
 
     static var kernel: URL { repo.appendingPathComponent("xnu/out/kernel.development.sweet") }
     static var stockBoot: URL { repo.appendingPathComponent("dtb/stock-boot.img") }
@@ -37,7 +40,8 @@ enum Config {
     /// A Finder-launched app gets a minimal PATH: add Homebrew (Apple
     /// Silicon and Intel), keg-only LLVM and the app's own bin (Heimdall).
     static var path: String {
-        [support.appendingPathComponent("bin").path,
+        [venv.appendingPathComponent("bin").path,
+         support.appendingPathComponent("bin").path,
          "/opt/homebrew/bin", "/opt/homebrew/sbin", "/opt/homebrew/opt/llvm/bin",
          "/usr/local/bin", "/usr/local/sbin", "/usr/local/opt/llvm/bin",
          "/usr/bin", "/bin", "/usr/sbin", "/sbin"].joined(separator: ":")
@@ -48,6 +52,7 @@ enum Config {
         e["PATH"] = path
         e["PYTHONUNBUFFERED"] = "1"       // progress lines appear as they happen
         e["HOMEBREW_NO_ENV_HINTS"] = "1"
+        e["HOMEBREW_NO_INSTALL_CLEANUP"] = "1"   // installs never remove other things (user's choice)
         e["LANG"] = e["LANG"] ?? "en_US.UTF-8"
         return e
     }
