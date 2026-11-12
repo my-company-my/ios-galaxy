@@ -519,8 +519,8 @@ struct IOSStep: View {
                 }
             }
             Panel(title: "Archivos de \(build.isEmpty ? "—" : build)") {
-                FileStatus(label: "DeviceTree D201AP → research/ipsw-8/d201ap.adt", url: Config.adt)
                 if let p = parts {
+                    if let dt = p.devicetree { FileStatus(label: "DeviceTree D201AP", url: URL(fileURLWithPath: dt)) }
                     if let os = p.os { FileStatus(label: "OS", url: URL(fileURLWithPath: os)) }
                     if let s = p.systemos { FileStatus(label: "Cryptex1,SystemOS", url: URL(fileURLWithPath: s)) }
                     if let a = p.appos { FileStatus(label: "Cryptex1,AppOS", url: URL(fileURLWithPath: a)) }
@@ -530,6 +530,7 @@ struct IOSStep: View {
                 }
                 Button("Mostrar en Finder") { showInFinder(Config.buildDir(build)) }.disabled(build.isEmpty)
             }
+            FileStatus(label: "research/ipsw-8/d201ap.adt (lo usa la imagen boot; es el último DeviceTree descargado)", url: Config.adt)
             Text("\"Revisar instrucciones\" busca en el código de iOS instrucciones que el Cortex-A53 no tiene: lse y ldapr las emula el kernel; las marcadas NOT EMULATED fallarán si se ejecutan.")
                 .font(.caption).foregroundColor(.secondary)
         }
