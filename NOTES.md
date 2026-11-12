@@ -125,6 +125,14 @@
   afterwards. The venv bash was run here exactly as the app builds it:
   fresh, existing and broken venv, path with spaces. CI run 43203076670
   (736a610): all jobs pass; it published this version as "latest".
+- Second real use: the adb cask installed; numpy failed with pip's "Can
+  not perform a '--user' install. User site-packages are not visible in
+  this virtualenv": the user's pip config (pip.conf user = true, or
+  PIP_USER=1) forces --user. Reproduced here with both; the venv pip now
+  runs with PIP_USER=0 (overrides only that setting), tested with
+  [global] user = true, [install] user = yes and PIP_USER=1. Heimdall was
+  still missing because the repo was not cloned yet: the final check now
+  says to do step 1 first.
 - Not verified: the app with a real phone (adb/Heimdall states, flashing),
   the administrator dialog path, the TWRP .tar extraction with a real
   Samsung tar.

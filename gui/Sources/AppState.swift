@@ -59,7 +59,9 @@ var numpyInstall: String {
       echo "creando el venv de la app con $py"
       mkdir -p \(sq(Config.support.path)) && "$py" -m venv --clear \(v) || exit 1
     fi
-    \(v)/bin/python3 -m pip install --disable-pip-version-check numpy || exit 1
+    # PIP_USER=0: a pip.conf with "user = true" (or PIP_USER=1) makes pip refuse
+    # to install into a venv; override only that setting for this command
+    PIP_USER=0 \(v)/bin/python3 -m pip install --disable-pip-version-check numpy || exit 1
     \(v)/bin/python3 -c 'import numpy, sys; print("numpy", numpy.__version__, "para Python", sys.version.split()[0], "en", numpy.__file__)'
     """
 }
@@ -211,11 +213,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
             await runner.run("Compilar Heimdall", "bash tools/heimdall-build.sh \(sq(Config.support.path))", cwd: Config.repo)
         }
         let r = await refreshDeps()
-        let still = dependencies.filter { r[$0.id] != true }.map(\.name)
+        let still = dependencies.filter { r[$0.id] != true }
         if still.isEmpty {
             runner.log("✔ Revisión final: todas las herramientas están instaladas.", .ok)
         } else {
-            runner.log("✘ Revisión final: siguen faltando \(still.joined(separator: ", ")). Mira la salida de arriba.", .error)
+            runner.log("✘ Revisión final: siguen faltando \(still.map(\.name).joined(separator: ", ")).", .error)
+            if still.contains(where: { $0.id == "heimdall" }) && !repoExists {
+                runner.log("   Heimdall se compila con un script del repositorio: haz el paso 1 (Repositorio) y vuelve a pulsar \"Instalar lo que falta\".", .info)
+            }
+            if still.contains(where: { $0.id != "heimdall" }) {
+                runner.log("   Mira la salida de arriba para ver por qué.", .info)
+            }
         }
     }
 
