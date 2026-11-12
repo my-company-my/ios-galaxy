@@ -184,6 +184,12 @@
   as before; found a missing ml_io_map declaration first); 0082-0088
   unchanged; work/xnu + 0082..0089 == edited tree.
 - The J7 Neo's battery is removable (last resort).
+- CI run 43211060972 (def5515): all jobs pass: kernel with 0089 built,
+  Verify (89 patches, ARMv8.0 only), QEMU escape up/down/none, app
+  self-test (TWRP URL/SHA-256 check) and captures; release "latest"
+  updated (its kernel has the "restart into TWRP" strings). The app's
+  TWRP download command was run here against GitHub: real SHA-256
+  accepted, wrong one rejected with nothing left behind.
 
 ## Decisions taken with the user
 
