@@ -123,7 +123,8 @@
   wheels), HOMEBREW_NO_INSTALL_CLEANUP=1, auto-update kept; formulas,
   casks and the venv are separate commands and the result is the check
   afterwards. The venv bash was run here exactly as the app builds it:
-  fresh, existing and broken venv, path with spaces.
+  fresh, existing and broken venv, path with spaces. CI run 43203076670
+  (736a610): all jobs pass; it published this version as "latest".
 - Not verified: the app with a real phone (adb/Heimdall states, flashing),
   the administrator dialog path, the TWRP .tar extraction with a real
   Samsung tar.
