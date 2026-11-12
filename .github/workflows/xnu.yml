@@ -21,6 +21,7 @@ on:
       - "xnu/patches/**"
       - "shim/**"
       - "tools/**"
+      - "gui/**"
       - ".github/workflows/xnu.yml"
 
 concurrency:
@@ -176,3 +177,90 @@ jobs:
           name: xnu-kernel
           path: out/
           if-no-files-found: warn
+
+  # Mac app (gui/): build, self-test, Heimdall build and IPSW helper on a real
+  # Mac, PNG of every wizard step.
+  app:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the app (swiftc, universal, macOS 13+)
+        run: bash gui/build-app.sh "$RUNNER_TEMP/app"
+      - name: Self-test
+        run: '"$RUNNER_TEMP/app/iOS Galaxy.app/Contents/MacOS/iOS Galaxy" --selftest'
+      - name: Heimdall build (tools/heimdall-build.sh, what the app's install button runs)
+        run: |
+          bash tools/heimdall-build.sh "$RUNNER_TEMP/support"
+          "$RUNNER_TEMP/support/bin/heimdall" version
+          "$RUNNER_TEMP/support/bin/heimdall" detect && exit 1 || echo "detect without a phone: exit $? (expected 1)"
+      - name: IPSW helper (version list, DeviceTree-only download)
+        run: |
+          python3 tools/ipsw-fetch.py list | head -5
+          python3 tools/ipsw-fetch.py fetch 20H392 --devicetree-only --out "$RUNNER_TEMP/ipsw"
+          python3 tools/mkadt.py "$RUNNER_TEMP/j7neo.adt"
+      - name: Snapshots of every step
+        continue-on-error: true
+        env:
+          IOSGALAXY_REPO: ${{ github.workspace }}
+        run: |
+          bin="$RUNNER_TEMP/app/iOS Galaxy.app/Contents/MacOS/iOS Galaxy"
+          "$bin" --snapshots "$RUNNER_TEMP/capturas" &
+          pid=$!
+          for i in $(seq 150); do kill -0 $pid 2>/dev/null || break; sleep 1; done
+          kill $pid 2>/dev/null || true
+          ls -la "$RUNNER_TEMP/capturas"
+          (cd "$RUNNER_TEMP" && zip -qr capturas.zip capturas)
+      - name: Collect
+        if: always()
+        run: |
+          mkdir -p app-out
+          cp "$RUNNER_TEMP/app/iOS-Galaxy.app.zip" app-out/ 2>/dev/null || true
+          cp "$RUNNER_TEMP/capturas.zip" app-out/ 2>/dev/null || true
+          ls -la app-out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-galaxy-app
+          path: app-out/
+
+  # One "latest" release with the kernel and the app, replaced by every run
+  # on the work branch where all jobs pass (download needs no GitHub login).
+  # (job-level `if` cannot read `env`, so the branch is written here)
+  release:
+    needs: [shim, build, app]
+    if: github.event_name != 'pull_request' && github.ref_name == 'claude/exciting-ritchie-47zds5'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: xnu-kernel
+          path: kernel
+      - uses: actions/download-artifact@v4
+        with:
+          name: ios-galaxy-app
+          path: app
+      - name: Replace the "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mkdir -p rel
+          cp kernel/kernel.development.sweet app/iOS-Galaxy.app.zip rel/
+          [ -f app/capturas.zip ] && cp app/capturas.zip rel/
+          (cd rel && sha256sum kernel.development.sweet iOS-Galaxy.app.zip > SHA256SUMS && cat SHA256SUMS)
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          cat > notes.md <<EOF
+          Kernel y app de la CI (run $GITHUB_RUN_ID, commit ${GITHUB_SHA:0:7}, rama $GITHUB_REF_NAME).
+
+          - kernel.development.sweet: los 88+ parches aplicados y sin instrucciones posteriores a ARMv8.0 (paso Verify).
+          - iOS-Galaxy.app.zip: la app para Mac (macOS 13+, Apple Silicon e Intel), firmada ad hoc.
+          - capturas.zip: cada paso de la app, capturado en la CI.
+
+          $run_url
+          EOF
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest rel/* --target "$GITHUB_SHA" --title "latest (CI ${GITHUB_SHA:0:7})" --notes-file notes.md
+          gh release view latest
